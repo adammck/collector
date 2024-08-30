@@ -1,0 +1,79 @@
+body,
+html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.container {
+    display: flex;
+    flex: 1;
+}
+
+.input,
+.output {
+    width: 50%;
+}
+
+.input {
+    background-color: #eee;
+}
+
+.output {
+    background-color: #fff;
+
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.toolbar {
+    height: 100px;
+    background-color: #ddd;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* grid2d */
+
+.grid-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 10px;
+}
+
+.grid-container table {
+    border-collapse: collapse;
+    font: 20pt "Helvetica Neue", sans-serif;
+}
+
+.grid-container td {
+    border: 1px solid #ddd;
+    padding: 10px;
+    text-align: center;
+    width: 40px;
+    height: 40px;
+
+    /* colors overridden in js */
+    background: #fff;
+    color: #eee;
+}
+
+/* one-hot */
+
+.one-hot {
+}
+
+.one-hot div {
+    margin-bottom: 5px;
+}
+
+.one-hot button {
+    font-size: 14pt;
+    cursor: pointer;
+}
