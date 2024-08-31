@@ -3,7 +3,7 @@ let prevCleanup = null;
 // to debounce submissions.
 let canSubmit = false;
 
-function fetchNext() {
+async function fetchNext() {
 
     // clean up old event handlers, if needed.
     if (prevCleanup) {
@@ -11,13 +11,28 @@ function fetchNext() {
         prevCleanup = null;
     }
 
-    fetch("/data.json")
-        .then(response => response.json())
-        .then(data => {
-            renderInput(data.inputs[0]);
-            renderOutput(data.output);
-        })
-        .catch(error => console.error("error fetching data:", error));
+    const response = await fetch("/data.json");
+
+    if (!response.ok) {
+        // assume text if error
+        const text = await response.text();
+        console.error("error fetching data:", text);
+        return;
+    }
+
+    // expect json on success
+    const ct = response.headers.get("content-type");
+    if (!ct || ct !== "application/json") {
+        throw new Error(`expected json, got: ${ct}`);
+    }
+
+    try {
+        const data = await response.json();
+        renderInput(data.inputs[0]);
+        renderOutput(data.output);
+    } catch (error) {
+        console("error rendering data:", error);
+    }
     
     canSubmit = true;
 }

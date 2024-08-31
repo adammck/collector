@@ -10,12 +10,15 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 )
 
-var output *string
+var input, output *string
 
 func main() {
 	port := flag.Int("port", 8000, "port to listen on")
+	input = flag.String("input", "input/*.jsonl", "input glob (beware shell escaping)")
 	output = flag.String("output", "examples.jsonl", "output file")
 	flag.Parse()
 
@@ -23,11 +26,30 @@ func main() {
 	http.Handle("/", fs)
 
 	http.HandleFunc("/data.json", func(w http.ResponseWriter, r *http.Request) {
+		contents, err := getInputFile(*input)
+
+		if err == os.ErrNotExist {
+			http.Error(w, "no input files found", http.StatusNotFound)
+			return
+
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		data, err := makeResponse(contents)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(getData())
+		json.NewEncoder(w).Encode(data)
 	})
 
 	http.HandleFunc("/submit", submitHandler)
+
+	log.Printf("Input: %s\n", *input)
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("Listening on %s\n", addr)
@@ -68,21 +90,20 @@ func submitHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{}`))
 }
 
-func getData() Data {
-	d := []int{
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0,
+func makeResponse(contents []byte) (*Data, error) {
+	d := []int{}
+	if err := json.Unmarshal(contents, &d); err != nil {
+		return nil, fmt.Errorf("json.Unmarshal: %w", err)
 	}
 
-	d[rand.Intn(len(d))] = 1
+	rows := 8
+	cols := 8
 
-	return Data{
+	if len(d) != rows*cols {
+		return nil, fmt.Errorf("wrong length: expected=%d, got=%d", rows*cols, len(d))
+	}
+
+	return &Data{
 		Inputs: []Input{
 			{
 				UI: UI{
@@ -107,7 +128,7 @@ func getData() Data {
 				},
 			},
 		},
-	}
+	}, nil
 }
 
 type Data struct {
@@ -146,4 +167,37 @@ type OneHot struct {
 type Output struct {
 	Type   string `json:"type"`
 	OneHot OneHot `json:"one_hot,omitempty"`
+}
+
+func getInputFile(pattern string) ([]byte, error) {
+	for i := 0; i < 30; i++ {
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			return []byte{}, err
+		}
+
+		if len(files) > 0 {
+			// pick a random file
+			i := rand.Intn(len(files))
+			return consume(files[i])
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return []byte{}, os.ErrNotExist
+}
+
+func consume(fn string) ([]byte, error) {
+	contents, err := os.ReadFile(fn)
+	if err != nil {
+		return []byte{}, fmt.Errorf("os.ReadFile: %w", err)
+	}
+
+	err = os.Remove(fn)
+	if err != nil {
+		return []byte{}, fmt.Errorf("os.Remove: %w", err)
+	}
+
+	return contents, nil
 }
