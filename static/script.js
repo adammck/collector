@@ -67,6 +67,8 @@ function renderOutput(config) {
     } else {
         throw new Error(`unknown output type: ${typ}`);
     }
+
+    dest.classList.remove("disabled");
 }
 
 function renderGrid(input) {
@@ -159,6 +161,9 @@ function submitExample(output) {
         return
     }
     canSubmit = false;
+
+    const dest = document.querySelector(".output");
+    dest.classList.add("disabled");
 
     if (!lastInput) {
         throw new Error(`submitExample called but lastInput is null`);

@@ -26,13 +26,22 @@ func main() {
 	http.Handle("/", fs)
 
 	http.HandleFunc("/data.json", func(w http.ResponseWriter, r *http.Request) {
-		contents, err := getInputFile(*input)
+		var contents []byte
+		var err error
 
-		if err == os.ErrNotExist {
-			http.Error(w, "no input files found", http.StatusNotFound)
-			return
+		// loop until getInputFile returns something, but return early if it
+		// returns and error other than NotExist.
+		for {
+			contents, err = getInputFile(*input)
+			if err == nil {
+				break
+			}
 
-		} else if err != nil {
+			if err == os.ErrNotExist {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -120,11 +129,11 @@ func makeResponse(contents []byte) (*Data, error) {
 			Type: "onehot",
 			OneHot: OneHot{
 				Options: []OneHotOption{
+					{Label: "stop", Key: " "},
 					{Label: "forwards", Key: "ArrowUp"},
 					{Label: "backwards", Key: "ArrowDown"},
 					{Label: "left", Key: "ArrowLeft"},
 					{Label: "right", Key: "ArrowRight"},
-					{Label: "stop", Key: " "},
 				},
 			},
 		},

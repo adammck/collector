@@ -29,6 +29,10 @@ html {
     align-items: center;
 }
 
+.output.disabled {
+    opacity: 0.2;
+}
+
 .toolbar {
     height: 100px;
     background-color: #ddd;
