@@ -1,2 +1,5 @@
 /collector
 /examples.jsonl
+
+# just temporary while i hack on this.
+/proto/gen/*.go

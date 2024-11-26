@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package collector;
+
+option go_package = "./pb";
+
+message Ints {
+    repeated int64 values = 1;
+}
+
+message Floats {
+    repeated double values = 1;
+}
+
+message Data {
+    oneof data {
+        Ints ints = 1;
+        Floats floats = 2;
+    }
+}
+
+message Grid {
+    int32 rows = 1;
+    int32 cols = 2;
+}
+
+message Option {
+    string label = 1;
+    string hotkey = 2;
+}
+
+message OptionListSchema {
+    repeated Option options = 1;
+}
+
+message OutputSchema {
+    oneof output {
+        OptionListSchema option_list = 1;
+    }
+}
+
+message OptionListOutput {
+    int32 index = 1;
+}
+
+message Output {
+    oneof output {
+        OptionListOutput option_list = 1;
+    }
+}
+
+message Input {
+    oneof visualization {
+        Grid grid = 1;
+    }
+
+    Data data = 2;
+}
+
+message Request {
+    repeated Input inputs = 1;
+    OutputSchema output = 2;
+}
+
+message Response {
+    Output output = 2;
+}
+
+service Collector {
+    rpc Collect(Request) returns (Response) {}
+}
