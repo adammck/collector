@@ -1,212 +1,151 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
+	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"time"
+
+	pb "github.com/adammck/collector/proto/gen"
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-var input, output *string
+type pair struct {
+	req *pb.Request
+	res chan *pb.Response
+}
+
+var proxy chan *pair
+var pending map[string]chan *pb.Response
+
+func init() {
+	proxy = make(chan *pair)
+	pending = map[string]chan *pb.Response{}
+}
 
 func main() {
-	port := flag.Int("port", 8000, "port to listen on")
-	input = flag.String("input", "input/*.jsonl", "input glob (beware shell escaping)")
-	output = flag.String("output", "examples.jsonl", "output file")
+	hp := flag.Int("http-port", 8000, "port for http server to listen on")
+	gp := flag.Int("grpc-port", 50051, "port for grpc server to listen on")
 	flag.Parse()
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
 
 	http.HandleFunc("/data.json", func(w http.ResponseWriter, r *http.Request) {
-		var contents []byte
-		var err error
 
-		// loop until getInputFile returns something, but return early if it
-		// returns and error other than NotExist.
-		for {
-			contents, err = getInputFile(*input)
-			if err == nil {
-				break
-			}
+		// Block until the next request (from gRPC) is available.
+		// TODO: Timeout
+		p := <-proxy
 
-			if err == os.ErrNotExist {
-				time.Sleep(500 * time.Millisecond)
-				continue
-			}
+		// Store the response chan for later.
+		u := uuid.NewString()
+		pending[u] = p.res
 
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		err := validate(p.req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		data, err := makeResponse(contents)
+		b, err := protojson.Marshal(p.req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(data)
+		w.Write(b)
 	})
 
-	http.HandleFunc("/submit", submitHandler)
+	http.HandleFunc("POST /submit/{uuid}", func(w http.ResponseWriter, r *http.Request) {
+		u := r.PathValue("uuid")
+		if u == "" {
+			http.Error(w, "missing: uuid", http.StatusNotFound)
+			return
+		}
 
-	log.Printf("Input: %s\n", *input)
+		resCh, ok := pending[u]
+		if !ok {
+			http.Error(w, fmt.Sprintf("pending not found: %v", u), http.StatusNotFound)
+			return
+		}
 
-	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Listening on %s\n", addr)
-	err := http.ListenAndServe(addr, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func submitHandler(w http.ResponseWriter, r *http.Request) {
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r.Body); err != nil {
-		http.Error(w, fmt.Sprintf("io.Copy: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("%s\n", buf.String())
-
-	f, err := os.OpenFile(*output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("os.OpenFile: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
-	if _, err := buf.WriteTo(f); err != nil {
-		http.Error(w, fmt.Sprintf("buf.WriteTo: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if _, err := f.WriteString("\n"); err != nil {
-		http.Error(w, fmt.Sprintf("f.WriteString: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{}`))
-}
-
-func makeResponse(contents []byte) (*Data, error) {
-	d := []int{}
-	if err := json.Unmarshal(contents, &d); err != nil {
-		return nil, fmt.Errorf("json.Unmarshal: %w", err)
-	}
-
-	rows := 8
-	cols := 8
-
-	if len(d) != rows*cols {
-		return nil, fmt.Errorf("wrong length: expected=%d, got=%d", rows*cols, len(d))
-	}
-
-	return &Data{
-		Inputs: []Input{
-			{
-				UI: UI{
-					Type: "grid2d",
-					Grid2D: Grid2D{
-						Rows: 8,
-						Cols: 8,
-					},
-				},
-				Data: d,
-			},
-		},
-		Output: Output{
-			Type: "onehot",
-			OneHot: OneHot{
-				Options: []OneHotOption{
-					{Label: "stop", Key: " "},
-					{Label: "forwards", Key: "ArrowUp"},
-					{Label: "backwards", Key: "ArrowDown"},
-					{Label: "left", Key: "ArrowLeft"},
-					{Label: "right", Key: "ArrowRight"},
-				},
-			},
-		},
-	}, nil
-}
-
-type Data struct {
-	Inputs []Input `json:"inputs"`
-	Output Output  `json:"output"`
-}
-
-// input
-
-type Grid2D struct {
-	Rows int `json:"rows"`
-	Cols int `json:"cols"`
-}
-
-type UI struct {
-	Type   string `json:"type"`
-	Grid2D Grid2D `json:"grid2d,omitempty"`
-}
-
-type Input struct {
-	UI   UI    `json:"ui"`
-	Data []int `json:"data"`
-}
-
-// output
-
-type OneHotOption struct {
-	Label string `json:"label"`
-	Key   string `json:"key"`
-}
-
-type OneHot struct {
-	Options []OneHotOption `json:"options"`
-}
-
-type Output struct {
-	Type   string `json:"type"`
-	OneHot OneHot `json:"one_hot,omitempty"`
-}
-
-func getInputFile(pattern string) ([]byte, error) {
-	for i := 0; i < 30; i++ {
-		files, err := filepath.Glob(pattern)
+		b, err := io.ReadAll(r.Body)
 		if err != nil {
-			return []byte{}, err
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
-		if len(files) > 0 {
-			// pick a random file
-			i := rand.Intn(len(files))
-			return consume(files[i])
+		res := &pb.Response{}
+		err = protojson.Unmarshal(b, res)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
-		time.Sleep(100 * time.Millisecond)
-	}
+		// Send the encoded response back to the gRPC server. It will send it
+		// back to the caller, which is hopefully still waiting.
+		resCh <- res
+		close(resCh)
 
-	return []byte{}, os.ErrNotExist
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`))
+	})
+
+	go func() {
+		addr := fmt.Sprintf(":%d", *hp)
+		log.Printf("Listening on %s\n", addr)
+		err := http.ListenAndServe(addr, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	go func() {
+		addr := fmt.Sprintf(":%d", *gp)
+		log.Printf("Listening on %s\n", addr)
+
+		lis, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Fatalf("failed to listen: %v", err)
+		}
+
+		srv := grpc.NewServer()
+		server := &collectorServer{}
+		pb.RegisterCollectorServer(srv, server)
+
+		if err := srv.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
+
+	select {}
 }
 
-func consume(fn string) ([]byte, error) {
-	contents, err := os.ReadFile(fn)
-	if err != nil {
-		return []byte{}, fmt.Errorf("os.ReadFile: %w", err)
+func validate(req *pb.Request) error {
+	return nil
+}
+
+type collectorServer struct {
+	pb.UnsafeCollectorServer
+}
+
+func (s *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Response, error) {
+	resCh := make(chan *pb.Response, 1)
+
+	proxy <- &pair{
+		req: req,
+		res: resCh,
 	}
 
-	err = os.Remove(fn)
-	if err != nil {
-		return []byte{}, fmt.Errorf("os.Remove: %w", err)
-	}
+	// Wait for the response to arrive.
+	// TODO(adammck): Timeout
+	res := <-resCh
 
-	return contents, nil
+	return res, nil
 }
