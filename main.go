@@ -116,6 +116,8 @@ type collectorServer struct {
 }
 
 func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Response, error) {
+	fmt.Printf("Collect: %v", req)
+
 	resCh := make(chan *pb.Response, 1)
 	p := &pair{
 		req: req,

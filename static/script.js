@@ -1,11 +1,9 @@
 let prevCleanup = null;
-
-// to debounce submissions.
 let canSubmit = false;
+let lastUuid = null;
 
 async function fetchNext() {
-
-    // clean up old event handlers, if needed.
+    // Clean up old event handlers, if needed
     if (prevCleanup) {
         prevCleanup();
         prevCleanup = null;
@@ -14,13 +12,11 @@ async function fetchNext() {
     const response = await fetch("/data.json");
 
     if (!response.ok) {
-        // assume text if error
         const text = await response.text();
         console.error("error fetching data:", text);
         return;
     }
 
-    // expect json on success
     const ct = response.headers.get("content-type");
     if (!ct || ct !== "application/json") {
         throw new Error(`expected json, got: ${ct}`);
@@ -28,10 +24,15 @@ async function fetchNext() {
 
     try {
         const data = await response.json();
-        renderInput(data.inputs[0]);
-        renderOutput(data.output);
+        
+        // Extract UUID from response URL
+        const url = new URL(response.url);
+        lastUuid = url.searchParams.get("uuid");
+        
+        renderInput(data);
+        renderOutput(data);
     } catch (error) {
-        console("error rendering data:", error);
+        console.error("error rendering data:", error);
     }
     
     canSubmit = true;
@@ -39,8 +40,9 @@ async function fetchNext() {
 
 let lastInput = null;
 
-function renderInput(input) {
-    const typ = input.ui.type;
+function renderInput(data) {
+    const input = data.input || {};
+    const typ = input.type;
     var elem;
 
     if (typ === "grid2d") {
@@ -52,11 +54,12 @@ function renderInput(input) {
     const div = document.querySelector(".input");
     div.replaceChildren(elem);
 
-    // store the input data to be submitted back later, with the output.
-    lastInput = input.data;
+    // Store the input data to be submitted back later
+    lastInput = input;
 }
 
-function renderOutput(config) {
+function renderOutput(data) {
+    const config = data.output || {};
     const typ = config.type;
 
     const dest = document.querySelector(".output");
@@ -75,9 +78,9 @@ function renderGrid(input) {
     const gridContainer = document.createElement("div");
     gridContainer.className = "grid-container";
 
-    const rows = input.ui.grid2d.rows;
-    const cols = input.ui.grid2d.cols;
-    const data = input.data;
+    const rows = input.rows || 0;
+    const cols = input.cols || 0;
+    const data = input.data || [];
 
     const table = document.createElement("table");
     table.className = "grid-table";
@@ -109,16 +112,16 @@ function renderOneHot(config, dest) {
     const container = document.createElement("div");
     container.className = "one-hot";
 
-    const options = config.one_hot.options;
+    const options = config.options || [];
     const buttons = {};
 
-    submit = function(index) {
-        var onehot = [];
+    const submit = function(index) {
+        const onehot = [];
         for (let i = 0; i < options.length; i++) {
-            onehot[i] = (index == i) ? 1 : 0;
+            onehot[i] = (index === i) ? 1 : 0;
         }
         submitExample(onehot);
-    }
+    };
 
     for (let i = 0; i < options.length; i++) {
         const option = options[i];
@@ -126,11 +129,10 @@ function renderOneHot(config, dest) {
         const button = document.createElement("button");
         button.textContent = option.label;
 
-        button.addEventListener("click", function() { submit(i) });
+        button.addEventListener("click", () => submit(i));
         
         const div = document.createElement("div");
         div.appendChild(button);
-
         container.appendChild(div);
 
         if (option.key) {
@@ -138,16 +140,15 @@ function renderOneHot(config, dest) {
         }
     }
 
-    handler = function(event) {
+    const handler = function(event) {
         const button = buttons[event.key];
-
         if (button) {
             button.click();
             button.focus();
         }
-    }
+    };
+    
     document.addEventListener("keydown", handler);
-
     dest.replaceChildren(container);
 
     return function() {
@@ -156,9 +157,8 @@ function renderOneHot(config, dest) {
 }
 
 function submitExample(output) {
-    // ignore the submission if we are already processing one.
     if (!canSubmit) {
-        return
+        return;
     }
     canSubmit = false;
 
@@ -169,17 +169,21 @@ function submitExample(output) {
         throw new Error(`submitExample called but lastInput is null`);
     }
 
+    if (!lastUuid) {
+        throw new Error(`submitExample called but lastUuid is null`);
+    }
+
     const data = {
-        input: lastInput,
+        input: lastInput.data,
         output: output
     };
 
-    fetch("/submit", {
+    fetch(`/submit/${lastUuid}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify(data)
     })
     .then(response => {
         if (!response.ok) {
@@ -189,12 +193,9 @@ function submitExample(output) {
         fetchNext();
     })
     .catch(error => {
-        console.error("error submitting: ", error);
+        console.error("error submitting:", error);
     });
 }
 
-document.getElementById("fetchDataButton").addEventListener("click", function() {
-    fetchNext();
-});
-
+document.getElementById("fetchDataButton").addEventListener("click", fetchNext);
 fetchNext();
