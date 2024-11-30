@@ -28,12 +28,16 @@ type pair struct {
 
 type server struct {
 	pending map[string]*pair
-	mu      sync.RWMutex
+	pmu     sync.RWMutex
+
+	waiters map[chan struct{}]struct{}
+	wmu     sync.Mutex
 }
 
 func newServer() *server {
 	return &server{
 		pending: make(map[string]*pair),
+		waiters: make(map[chan struct{}]struct{}),
 	}
 }
 
@@ -65,25 +69,52 @@ func (w *webRequest) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (s *server) getPendingRequest() (uuid string, p *pair, err error) {
-	for attempts := 0; attempts < 300; attempts++ {
-		s.mu.RLock()
-		if len(s.pending) > 0 {
-			keys := make([]string, 0, len(s.pending))
-			for k := range s.pending {
-				keys = append(keys, k)
-			}
-			uuid = keys[rand.Intn(len(keys))]
-			p = s.pending[uuid]
-			s.mu.RUnlock()
-			return uuid, p, nil
-		}
-		s.mu.RUnlock()
-
-		time.Sleep(100 * time.Millisecond)
+// assumes s.pmu is held
+func (s *server) getRandomPending() (string, *pair, bool) {
+	if len(s.pending) == 0 {
+		return "", nil, false
 	}
 
-	return "", nil, fmt.Errorf("no pending requests after timeout")
+	keys := make([]string, 0, len(s.pending))
+	for k := range s.pending {
+		keys = append(keys, k)
+	}
+
+	uuid := keys[rand.Intn(len(keys))]
+	p := s.pending[uuid]
+
+	return uuid, p, true
+}
+
+func (s *server) getPendingRequest() (string, *pair, error) {
+	ch := make(chan struct{})
+
+	s.wmu.Lock()
+	s.waiters[ch] = struct{}{}
+	s.wmu.Unlock()
+
+	defer func() {
+		s.wmu.Lock()
+		delete(s.waiters, ch)
+		s.wmu.Unlock()
+	}()
+
+	timeout := time.After(30 * time.Second)
+	for {
+		s.pmu.RLock()
+		uuid, p, ok := s.getRandomPending()
+		s.pmu.RUnlock()
+		if ok {
+			return uuid, p, nil
+		}
+
+		select {
+		case <-ch:
+			continue
+		case <-timeout:
+			return "", nil, fmt.Errorf("no pending requests after timeout")
+		}
+	}
 }
 
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
@@ -118,12 +149,12 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
+	s.pmu.Lock()
 	p, ok := s.pending[u]
 	if ok {
 		delete(s.pending, u)
 	}
-	s.mu.Unlock()
+	s.pmu.Unlock()
 
 	if !ok {
 		http.Error(w, fmt.Sprintf("pending not found: %v", u), http.StatusNotFound)
@@ -164,11 +195,20 @@ func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Re
 		res: resCh,
 	}
 
-	cs.s.mu.Lock()
+	cs.s.pmu.Lock()
 	cs.s.pending[u] = p
-	cs.s.mu.Unlock()
+	cs.s.pmu.Unlock()
 
-	// Wait for response or context cancellation
+	// notify all waiters
+	cs.s.wmu.Lock()
+	for ch := range cs.s.waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	cs.s.wmu.Unlock()
+
 	select {
 	case res, ok := <-resCh:
 		if !ok {
@@ -176,9 +216,9 @@ func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Re
 		}
 		return res, nil
 	case <-ctx.Done():
-		cs.s.mu.Lock()
+		cs.s.pmu.Lock()
 		delete(cs.s.pending, u)
-		cs.s.mu.Unlock()
+		cs.s.pmu.Unlock()
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
 }
