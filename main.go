@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -47,6 +48,23 @@ func (s *server) ServeHTTP() http.Handler {
 	return mux
 }
 
+type webRequest struct {
+	UUID  string      `json:"uuid"`
+	Proto *pb.Request `json:"proto"`
+}
+
+func (w *webRequest) MarshalJSON() ([]byte, error) {
+	pj, err := protojson.Marshal(w.Proto)
+	if err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(map[string]interface{}{
+		"uuid":  w.UUID,
+		"proto": json.RawMessage(pj),
+	})
+}
+
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 	// Block until the next request (from gRPC) is available
 	p := <-s.proxy
@@ -62,7 +80,10 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := protojson.Marshal(p.req)
+	b, err := json.Marshal(webRequest{
+		UUID:  u,
+		Proto: p.req,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -116,7 +137,7 @@ type collectorServer struct {
 }
 
 func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Response, error) {
-	fmt.Printf("Collect: %v", req)
+	fmt.Printf("Collect: %v\n", req)
 
 	resCh := make(chan *pb.Response, 1)
 	p := &pair{

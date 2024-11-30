@@ -3,7 +3,6 @@ let canSubmit = false;
 let lastUuid = null;
 
 async function fetchNext() {
-    // Clean up old event handlers, if needed
     if (prevCleanup) {
         prevCleanup();
         prevCleanup = null;
@@ -24,13 +23,16 @@ async function fetchNext() {
 
     try {
         const data = await response.json();
+        // Store UUID from top level
+        lastUuid = data.uuid;
         
-        // Extract UUID from response URL
-        const url = new URL(response.url);
-        lastUuid = url.searchParams.get("uuid");
-        
-        renderInput(data);
-        renderOutput(data);
+        // Handle the new structure
+        if (data.proto && data.proto.inputs && data.proto.inputs.length > 0) {
+            renderInput(data.proto.inputs[0]);
+        }
+        if (data.proto && data.proto.output) {
+            renderOutput(data.proto.output);
+        }
     } catch (error) {
         console.error("error rendering data:", error);
     }
@@ -40,37 +42,45 @@ async function fetchNext() {
 
 let lastInput = null;
 
-function renderInput(data) {
-    const input = data.input || {};
-    const typ = input.type;
-    var elem;
+function renderInput(input) {
+    if (!input.Visualization) {
+        throw new Error('Missing Visualization in input');
+    }
 
-    if (typ === "grid2d") {
-        elem = renderGrid(input);
+    let elem;
+    if (input.Visualization.Grid) {
+        elem = renderGrid({
+            rows: input.Visualization.Grid.rows,
+            cols: input.Visualization.Grid.cols,
+            data: input.data?.Data?.Ints?.values || []
+        });
     } else {
-        throw new Error(`unknown input type: ${typ}`);
+        throw new Error(`unknown visualization type: ${JSON.stringify(input.Visualization)}`);
     }
 
     const div = document.querySelector(".input");
     div.replaceChildren(elem);
 
     // Store the input data to be submitted back later
-    lastInput = input;
+    lastInput = input.data?.Data?.Ints?.values || [];
 }
 
-function renderOutput(data) {
-    const config = data.output || {};
-    const typ = config.type;
-
+function renderOutput(output) {
     const dest = document.querySelector(".output");
 
-    if (typ === "onehot") {
-        cleanup = renderOneHot(config, dest);
-        prevCleanup = cleanup;
-    } else {
-        throw new Error(`unknown output type: ${typ}`);
+    if (!output.Output?.OptionList) {
+        throw new Error(`unknown output type: ${JSON.stringify(output)}`);
     }
 
+    const cleanup = renderOneHot({
+        type: "onehot",
+        options: output.Output.OptionList.options.map(opt => ({
+            label: opt.label,
+            key: opt.hotkey
+        }))
+    }, dest);
+    
+    prevCleanup = cleanup;
     dest.classList.remove("disabled");
 }
 
@@ -115,21 +125,13 @@ function renderOneHot(config, dest) {
     const options = config.options || [];
     const buttons = {};
 
-    const submit = function(index) {
-        const onehot = [];
-        for (let i = 0; i < options.length; i++) {
-            onehot[i] = (index === i) ? 1 : 0;
-        }
-        submitExample(onehot);
-    };
-
     for (let i = 0; i < options.length; i++) {
         const option = options[i];
 
         const button = document.createElement("button");
         button.textContent = option.label;
 
-        button.addEventListener("click", () => submit(i));
+        button.addEventListener("click", () => submitExample(i));
         
         const div = document.createElement("div");
         div.appendChild(button);
@@ -174,8 +176,11 @@ function submitExample(output) {
     }
 
     const data = {
-        input: lastInput.data,
-        output: output
+        output: {
+            optionList: {
+                index: output
+            }
+        }
     };
 
     fetch(`/submit/${lastUuid}`, {
