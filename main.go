@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	pb "github.com/adammck/collector/proto/gen"
 	"github.com/google/uuid"
@@ -25,14 +27,12 @@ type pair struct {
 }
 
 type server struct {
-	proxy   chan *pair
 	pending map[string]*pair
 	mu      sync.RWMutex
 }
 
 func newServer() *server {
 	return &server{
-		proxy:   make(chan *pair),
 		pending: make(map[string]*pair),
 	}
 }
@@ -65,15 +65,33 @@ func (w *webRequest) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
-	// Block until the next request (from gRPC) is available
-	p := <-s.proxy
+func (s *server) getPendingRequest() (uuid string, p *pair, err error) {
+	for attempts := 0; attempts < 300; attempts++ {
+		s.mu.RLock()
+		if len(s.pending) > 0 {
+			keys := make([]string, 0, len(s.pending))
+			for k := range s.pending {
+				keys = append(keys, k)
+			}
+			uuid = keys[rand.Intn(len(keys))]
+			p = s.pending[uuid]
+			s.mu.RUnlock()
+			return uuid, p, nil
+		}
+		s.mu.RUnlock()
 
-	// Store the response chan for later
-	u := uuid.NewString()
-	s.mu.Lock()
-	s.pending[u] = p
-	s.mu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return "", nil, fmt.Errorf("no pending requests after timeout")
+}
+
+func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
+	uuid, p, err := s.getPendingRequest()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
 
 	if err := validate(p.req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -81,7 +99,7 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b, err := json.Marshal(webRequest{
-		UUID:  u,
+		UUID:  uuid,
 		Proto: p.req,
 	})
 	if err != nil {
@@ -140,25 +158,27 @@ func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Re
 	fmt.Printf("Collect: %v\n", req)
 
 	resCh := make(chan *pb.Response, 1)
+	u := uuid.NewString()
 	p := &pair{
 		req: req,
 		res: resCh,
 	}
 
-	// Send request to HTTP server
+	cs.s.mu.Lock()
+	cs.s.pending[u] = p
+	cs.s.mu.Unlock()
+
+	// Wait for response or context cancellation
 	select {
-	case cs.s.proxy <- p:
-		// Wait for response
-		select {
-		case res, ok := <-resCh:
-			if !ok {
-				return nil, status.Error(codes.Aborted, "response channel closed")
-			}
-			return res, nil
-		case <-ctx.Done():
-			return nil, status.Error(codes.Canceled, "request cancelled")
+	case res, ok := <-resCh:
+		if !ok {
+			return nil, status.Error(codes.Aborted, "response channel closed")
 		}
+		return res, nil
 	case <-ctx.Done():
+		cs.s.mu.Lock()
+		delete(cs.s.pending, u)
+		cs.s.mu.Unlock()
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
 }
