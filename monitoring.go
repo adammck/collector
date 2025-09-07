@@ -1,23 +1,23 @@
 package main
 
 import (
-	"sync/atomic"
 	"google.golang.org/grpc/codes"
+	"sync/atomic"
 )
 
 type ErrorStats struct {
 	ValidationErrors  int64
-	TimeoutErrors    int64
-	InternalErrors   int64
+	TimeoutErrors     int64
+	InternalErrors    int64
 	ResourceExhausted int64
-	TotalRequests    int64
+	TotalRequests     int64
 }
 
 var stats = &ErrorStats{}
 
 func recordError(code codes.Code) {
 	atomic.AddInt64(&stats.TotalRequests, 1)
-	
+
 	switch code {
 	case codes.InvalidArgument:
 		atomic.AddInt64(&stats.ValidationErrors, 1)
@@ -33,9 +33,9 @@ func recordError(code codes.Code) {
 func getStats() ErrorStats {
 	return ErrorStats{
 		ValidationErrors:  atomic.LoadInt64(&stats.ValidationErrors),
-		TimeoutErrors:    atomic.LoadInt64(&stats.TimeoutErrors),
-		InternalErrors:   atomic.LoadInt64(&stats.InternalErrors),
+		TimeoutErrors:     atomic.LoadInt64(&stats.TimeoutErrors),
+		InternalErrors:    atomic.LoadInt64(&stats.InternalErrors),
 		ResourceExhausted: atomic.LoadInt64(&stats.ResourceExhausted),
-		TotalRequests:    atomic.LoadInt64(&stats.TotalRequests),
+		TotalRequests:     atomic.LoadInt64(&stats.TotalRequests),
 	}
 }

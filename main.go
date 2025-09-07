@@ -24,8 +24,8 @@ import (
 
 const (
 	maxPendingRequests = 1000
-	httpTimeout = 30 * time.Second
-	submitTimeout = 5 * time.Second
+	httpTimeout        = 30 * time.Second
+	submitTimeout      = 5 * time.Second
 )
 
 var errTimeout = errors.New("no pending requests after timeout")
@@ -82,7 +82,6 @@ func (w *webRequest) MarshalJSON() ([]byte, error) {
 		"queue": w.Queue,
 	})
 }
-
 
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 	item, err := s.queue.GetNext(s.timeout)
@@ -288,21 +287,21 @@ func validate(req *pb.Request) error {
 	if req == nil {
 		return fmt.Errorf("request cannot be nil")
 	}
-	
+
 	if len(req.Inputs) == 0 {
 		return fmt.Errorf("request must have at least one input")
 	}
-	
+
 	for i, input := range req.Inputs {
 		if err := validateInput(input, i); err != nil {
 			return fmt.Errorf("input %d: %w", i, err)
 		}
 	}
-	
+
 	if err := validateOutputSchema(req.Output); err != nil {
 		return fmt.Errorf("output schema: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -310,7 +309,7 @@ func validateInput(input *pb.Input, index int) error {
 	if input == nil {
 		return fmt.Errorf("input cannot be nil")
 	}
-	
+
 	switch v := input.Visualization.(type) {
 	case *pb.Input_Grid:
 		if err := validateGrid(v.Grid, input.Data); err != nil {
@@ -321,7 +320,7 @@ func validateInput(input *pb.Input, index int) error {
 	default:
 		return fmt.Errorf("unsupported visualization type")
 	}
-	
+
 	return validateData(input.Data)
 }
 
@@ -329,21 +328,21 @@ func validateGrid(grid *pb.Grid, data *pb.Data) error {
 	if grid == nil {
 		return fmt.Errorf("grid cannot be nil")
 	}
-	
+
 	if grid.Rows <= 0 || grid.Cols <= 0 {
 		return fmt.Errorf("grid dimensions must be positive (got %dx%d)", grid.Rows, grid.Cols)
 	}
-	
+
 	if grid.Rows > 100 || grid.Cols > 100 {
 		return fmt.Errorf("grid too large (max 100x100, got %dx%d)", grid.Rows, grid.Cols)
 	}
-	
+
 	if data == nil {
 		return fmt.Errorf("data is required")
 	}
-	
+
 	expectedSize := int(grid.Rows * grid.Cols)
-	
+
 	switch d := data.Data.(type) {
 	case *pb.Data_Ints:
 		if d.Ints == nil {
@@ -364,7 +363,7 @@ func validateGrid(grid *pb.Grid, data *pb.Data) error {
 	default:
 		return fmt.Errorf("unsupported data type")
 	}
-	
+
 	return nil
 }
 
@@ -372,7 +371,7 @@ func validateData(data *pb.Data) error {
 	if data == nil {
 		return fmt.Errorf("data cannot be nil")
 	}
-	
+
 	switch d := data.Data.(type) {
 	case *pb.Data_Ints:
 		return nil
@@ -400,7 +399,7 @@ func validateOutputSchema(schema *pb.OutputSchema) error {
 	if schema == nil {
 		return fmt.Errorf("output schema is required")
 	}
-	
+
 	switch s := schema.Output.(type) {
 	case *pb.OutputSchema_OptionList:
 		if s.OptionList == nil {
@@ -409,7 +408,7 @@ func validateOutputSchema(schema *pb.OutputSchema) error {
 		if len(s.OptionList.Options) < 2 {
 			return fmt.Errorf("option list must have at least 2 options (got %d)", len(s.OptionList.Options))
 		}
-		
+
 		hotkeys := make(map[string]bool)
 		for i, opt := range s.OptionList.Options {
 			if opt == nil {

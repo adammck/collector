@@ -11,12 +11,12 @@ import (
 )
 
 type QueueItem struct {
-	ID        string
-	Request   *pb.Request
-	Response  chan *pb.Response
-	AddedAt   time.Time
-	Deferred  bool
-	Context   context.Context
+	ID       string
+	Request  *pb.Request
+	Response chan *pb.Response
+	AddedAt  time.Time
+	Deferred bool
+	Context  context.Context
 }
 
 type QueueStatus struct {
