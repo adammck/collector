@@ -24,7 +24,10 @@ examples based only on that.
 $ git clone ...
 $ brew install protoc-gen-go protoc-gen-go-grpc
 $ bin/gen-proto.sh
-$ bin/test.sh  # run tests (67.9% coverage)
+$ cd frontend && npm install  # install frontend dependencies
+$ npm run build               # build React frontend
+$ cd ..
+$ bin/test.sh                 # run tests (74.2% coverage)
 ```
 
 
@@ -37,12 +40,28 @@ $ go run main.go
 By default, the HTTP server runs on port 8000 and the gRPC server on port 50051.
 Open http://localhost:8000 in your browser to start collecting training data.
 
+### Development
+
+For frontend development with hot module replacement:
+
+```console
+# Terminal 1: Start the Go server
+$ go run main.go
+
+# Terminal 2: Start the frontend dev server
+$ cd frontend && npm run dev
+```
+
+The dev server runs on port 5173 with proxy to the Go backend.
+
 ### Web Interface
 
-The web interface displays:
-- Input visualization (currently supports 2D grids)
-- Response options with keyboard shortcuts
-- Queue status showing active, deferred, and total items
+**Modern React frontend** (migrated from vanilla JS in 2024):
+- **Input visualization**: 2D grids with proper styling and responsive layout
+- **Response options**: buttons with keyboard shortcuts and hotkey support
+- **Queue status**: real-time display of active, deferred, and total items
+- **State notifications**: clear feedback for loading, errors, and user actions
+- **TypeScript**: full type safety for all API interactions and UI components
 
 ### Keyboard Shortcuts
 
@@ -73,6 +92,21 @@ For robotics or simulation scenarios where training data is collected live:
 - Consider implementing fallback actions for time-sensitive decisions
 - The system maintains request order for temporal consistency
 
+## Architecture
+
+### Backend (Go)
+- **gRPC service** on port 50051 for training data requests
+- **HTTP server** on port 8000 serving React frontend and JSON API
+- **Thread-safe queue** with FIFO ordering and defer functionality
+- **Comprehensive validation** for input data and output schemas
+- **Structured error handling** with proper HTTP status codes
+
+### Frontend (React + TypeScript)
+- **Vite** for fast development and optimized production builds
+- **React Query** for server state management with built-in retry logic
+- **Zustand** for lightweight client state management
+- **Tailwind CSS** for utility-first styling
+- **Full type safety** with TypeScript interfaces matching protobuf structures
 
 ## License
 

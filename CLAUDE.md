@@ -104,7 +104,7 @@ This runs tests with race detection and generates coverage reports. Current cove
 
 ## Development Notes
 - Main function starts both HTTP (port 8000) and gRPC (port 50051) servers
-- Static files served from `./static/` directory
+- Static files served from `./frontend/dist/` directory (React build output)
 - Concurrent access tested extensively - no race conditions detected in queue operations
 - Context cancellation properly cleans up queue items and pending requests
 - **No panic recovery**: system fails fast rather than attempting recovery from unknown state
@@ -113,8 +113,9 @@ This runs tests with race detection and generates coverage reports. Current cove
 **ALWAYS** before committing changes:
 1. **Check IDE diagnostics** - resolve all compilation errors and warnings
 2. **Run tests** - `./bin/test.sh` must pass with no failures
-3. **Verify coverage** - ensure test coverage remains reasonable (target 65%+)
-4. **Architecture alignment** - ensure tests match current queue-based architecture (not old pending/waiter system)
+3. **Build frontend** - `cd frontend && npm run build` must succeed
+4. **Verify coverage** - ensure test coverage remains reasonable (target 65%+)
+5. **Architecture alignment** - ensure tests match current queue-based architecture (not old pending/waiter system)
 
 ## Queue System
 
@@ -155,3 +156,49 @@ This runs tests with race detection and generates coverage reports. Current cove
 - **Queue overhead** minimal for typical workloads (< 1000 pending items)
 - **Memory usage** scales linearly with queue size
 - **Concurrent safety** verified through extensive race condition testing
+
+## Frontend Architecture
+
+### Modern React Stack (2024)
+Migrated from vanilla JavaScript (~450 loc) to modern React + TypeScript:
+- **Vite** - fast dev server with HMR, optimized production builds
+- **React 18** - component-based UI with hooks for state management
+- **TypeScript** - full type safety for protobuf structures and API contracts
+- **Tailwind CSS** - utility-first styling, replacing manual CSS
+- **React Query** - server state management with built-in retry/caching/error handling
+- **Zustand** - lightweight client state (current UUID, app state, queue status)
+
+### Build System
+- **Development**: `cd frontend && npm run dev` (with Vite dev server)
+- **Production**: `cd frontend && npm run build` → outputs to `frontend/dist/`
+- **Server integration**: Go server serves static files from `./frontend/dist/`
+
+### Component Architecture
+- **App.tsx** - React Query provider, retry configuration
+- **CollectorApp.tsx** - main application logic, data fetching orchestration
+- **GridVisualization.tsx** - renders grid input data with proper styling
+- **OptionList.tsx** - option buttons with hotkey support
+- **QueueStatus.tsx** - real-time queue statistics display
+- **StateNotifier.tsx** - application state messages
+- **useKeyboardShortcuts** - custom hook for Ctrl+D/Ctrl+N shortcuts
+
+### Type Safety
+- **types.ts** - comprehensive TypeScript interfaces matching protobuf structures
+- **API layer** - typed request/response with structured error handling
+- **Component props** - fully typed for compile-time error catching
+
+### Error Handling & Retry Logic
+- **React Query retry** - exponential backoff for 408/503/network errors
+- **Error categorization** - timeout vs client vs server errors with appropriate messaging
+- **State management** - proper error state display and recovery flows
+
+### Performance Optimizations
+- **Bundle size** - 229kb raw → 71kb gzipped (reasonable for functionality)
+- **Code splitting** - Vite handles automatic optimization
+- **React optimizations** - useEffect dependencies, proper re-render patterns
+
+### Development Notes
+- **Hot module replacement** - instant updates during development
+- **TypeScript compilation** - catches errors at build time, not runtime
+- **Maintainable** - clear separation of concerns vs mixed vanilla JS classes
+- **Extensible** - easy to add new visualization types or output formats

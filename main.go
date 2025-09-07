@@ -53,7 +53,7 @@ func newServer() *server {
 
 func (s *server) ServeHTTP() http.Handler {
 	mux := http.NewServeMux()
-	fs := http.FileServer(http.Dir("./static"))
+	fs := http.FileServer(http.Dir("./frontend/dist"))
 
 	mux.Handle("/", fs)
 	mux.HandleFunc("/data.json", s.handleData)
