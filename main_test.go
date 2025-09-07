@@ -23,13 +23,28 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// initialize global config for tests
+	config = &Config{
+		HTTPPort:           8000,
+		GRPCPort:           50051,
+		MaxPendingRequests: 1000,
+		HTTPTimeout:        30 * time.Second,
+		SubmitTimeout:      5 * time.Second,
+	}
 	m.Run()
 }
 
 // test utilities
 
 func newTestServer() *server {
-	return newServer()
+	testConfig := &Config{
+		HTTPPort:           8000,
+		GRPCPort:           50051,
+		MaxPendingRequests: 1000,
+		HTTPTimeout:        30 * time.Second,
+		SubmitTimeout:      5 * time.Second,
+	}
+	return newServer(testConfig)
 }
 
 func newTestRequest() *pb.Request {

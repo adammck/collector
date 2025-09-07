@@ -170,9 +170,11 @@ func (q *Queue) notifyWaiters() {
 	q.wmu.Lock()
 	defer q.wmu.Unlock()
 
+	// wake only one waiter since we only have one item available
 	for ch := range q.waiters {
 		select {
 		case ch <- struct{}{}:
+			return // only wake one waiter
 		default:
 		}
 	}
