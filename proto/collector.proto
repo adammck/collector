@@ -24,6 +24,32 @@ message Grid {
     int32 cols = 2;
 }
 
+message MultiChannelGrid {
+    int32 rows = 1;
+    int32 cols = 2;
+    int32 channels = 3;
+    repeated string channel_names = 4;
+}
+
+message Scalar {
+    string label = 1;
+    double min = 2;
+    double max = 3;
+    string unit = 4;
+}
+
+message Vector2D {
+    string label = 1;
+    double max_magnitude = 2;
+}
+
+message TimeSeries {
+    string label = 1;
+    int32 points = 2;
+    double min_value = 3;
+    double max_value = 4;
+}
+
 message Option {
     string label = 1;
     string hotkey = 2;
@@ -52,9 +78,13 @@ message Output {
 message Input {
     oneof visualization {
         Grid grid = 1;
+        MultiChannelGrid multi_grid = 2;
+        Scalar scalar = 3;
+        Vector2D vector = 4;
+        TimeSeries time_series = 5;
     }
 
-    Data data = 2;
+    Data data = 6;
 }
 
 message Request {

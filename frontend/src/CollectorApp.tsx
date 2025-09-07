@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { GridVisualization } from './components/GridVisualization';
+import { VisualizationLayout } from './components/VisualizationLayout';
 import { OptionList } from './components/OptionList';
 import { QueueStatus } from './components/QueueStatus';
 import { StateNotifier } from './components/StateNotifier';
@@ -97,7 +97,7 @@ export function CollectorApp() {
   });
 
   const data = dataQuery.data;
-  const input = data?.proto.inputs?.[0];
+  const inputs = data?.proto.inputs || [];
   const output = data?.proto.output?.Output;
   const isSubmitting = state === 'submitting';
 
@@ -113,23 +113,21 @@ export function CollectorApp() {
 
       {/* Main Content */}
       <div className="flex flex-1 gap-6 p-6">
-        {/* Left Panel - Grid Visualization */}
+        {/* Left Panel - Visualizations */}
         <div className="flex-1 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
           <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-800">Input Data</h2>
-            <p className="text-sm text-gray-600">Grid visualization of the current data sample</p>
+            <p className="text-sm text-gray-600">
+              {inputs.length === 0 
+                ? 'No data available'
+                : inputs.length === 1 
+                  ? 'Single visualization'
+                  : `${inputs.length} visualizations`
+              }
+            </p>
           </div>
-          <div className="p-6">
-            {input ? (
-              <GridVisualization input={input} />
-            ) : (
-              <div className="flex items-center justify-center h-64 text-gray-500">
-                <div className="text-center">
-                  <div className="text-4xl mb-2">📊</div>
-                  <div>No data available</div>
-                </div>
-              </div>
-            )}
+          <div className="p-6 h-full">
+            <VisualizationLayout inputs={inputs} />
           </div>
         </div>
 

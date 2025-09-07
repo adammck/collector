@@ -1,8 +1,8 @@
 # Collector
 
-This is a small web app to collect training data by presenting the user some
-input data, and waiting for them to provide the output. It only supports a
-single type of each, right now, but I have vague plans to make it flexible.
+A flexible web application for collecting training data by presenting users with 
+various types of input visualizations and collecting their responses. Supports 
+multiple simultaneous visualization types for complex multi-modal scenarios.
 
 The system uses a queue-based approach that allows humans to work through 
 training data requests sequentially at their own pace, with the ability to
@@ -54,11 +54,24 @@ $ cd frontend && npm run dev
 
 The dev server runs on port 5173 with proxy to the Go backend.
 
+### Visualization Types
+
+The system supports multiple types of data visualization:
+
+- **Grid**: 2D grids for spatial data (e.g., game states, occupancy maps)
+- **Multi-Channel Grid**: RGB images, depth maps, or multi-sensor grid data
+- **Scalar**: Single values with progress bars (temperature, speed, confidence)
+- **Vector2D**: Directional data with arrow visualization (velocity, forces)
+- **Time Series**: Temporal data with line charts (sensor readings over time)
+
+Multiple visualizations can be displayed simultaneously with automatic layout management.
+
 ### Web Interface
 
 **Modern React frontend** (migrated from vanilla JS in 2024):
-- **Professional dashboard**: header, main content panels, and footer layout
-- **Input visualization**: bordered grid cards with size indicators and hover effects
+- **Professional dashboard**: header, main content panels, and footer layout  
+- **Dynamic visualization layout**: automatically arranges 1-N visualizations
+- **Multi-modal support**: grids, scalars, vectors, and time series in one view
 - **Interactive options**: gradient-styled cards with visible keyboard shortcuts
 - **Live status indicators**: animated queue status and color-coded state messages
 - **Modern design**: Inter font, gradients, shadows, and smooth transitions
@@ -93,13 +106,31 @@ For robotics or simulation scenarios where training data is collected live:
 - Consider implementing fallback actions for time-sensitive decisions
 - The system maintains request order for temporal consistency
 
+## Examples
+
+The `examples/` directory contains sample gRPC clients demonstrating different visualization types:
+
+- `examples/grid/` - Simple 2D grid visualization (original example)
+- `examples/multi_channel_grid/` - RGB image data with 3-channel visualization
+- `examples/scalar/` - Temperature sensor with progress bar display
+- `examples/vector/` - 2D velocity vector with arrow visualization  
+- `examples/time_series/` - Sensor readings over time with line chart
+- `examples/multi_input/` - Complex robotics scenario with depth camera + velocity + temperature
+
+Run any example:
+```console
+$ go run examples/scalar/main.go
+$ go run examples/multi_input/main.go
+```
+
 ## Architecture
 
 ### Backend (Go)
 - **gRPC service** on port 50051 for training data requests
 - **HTTP server** on port 8000 serving React frontend and JSON API
 - **Thread-safe queue** with FIFO ordering and defer functionality
-- **Comprehensive validation** for input data and output schemas
+- **Multi-visualization support** with validation for all data types
+- **Comprehensive validation** for grids, scalars, vectors, time series, and multi-channel data
 - **Structured error handling** with proper HTTP status codes
 
 ### Frontend (React + TypeScript)

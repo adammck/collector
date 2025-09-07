@@ -37,9 +37,10 @@ This runs tests with race detection and generates coverage reports. Current cove
 - **server**: manages queue and current active requests with `server.queue *Queue` and `server.current map[string]*QueueItem`
 - **queue.go**: thread-safe FIFO queue with defer functionality and waiter notifications
 - **HTTP handlers**: `/data.json` (polling), `/submit/{uuid}` (responses), `/defer/{uuid}` (defer), `/queue/status` (statistics)
-- **gRPC service**: `Collect` RPC with context cancellation support
+- **gRPC service**: `Collect` RPC with context cancellation support and multi-visualization support
 - **concurrency**: thread-safe queue operations with RWMutex, waiter channel notifications for efficient polling
 - **architecture change**: migrated from direct `pending map[string]*pair` + mutex to queue-based system
+- **visualization system**: supports Grid, MultiChannelGrid, Scalar, Vector2D, and TimeSeries types with comprehensive validation
 
 ### Request Flow
 1. gRPC `Collect` call validates input and enqueues request with response channel
@@ -52,7 +53,12 @@ This runs tests with race detection and generates coverage reports. Current cove
 
 ### Input Validation
 - **Request validation**: ensures at least one input is provided
-- **Grid validation**: positive dimensions, max 100x100 size limit, data array matches grid size
+- **Visualization validation**: comprehensive validation for all visualization types
+  - **Grid**: positive dimensions, max 100x100 size, data array matches grid size
+  - **MultiChannelGrid**: channel count validation (max 10), optional channel names
+  - **Scalar**: label required, min < max, single float value within range
+  - **Vector2D**: label required, positive max_magnitude, exactly 2 float values
+  - **TimeSeries**: label required, positive points (max 1000), min < max, all values in range
 - **Data validation**: checks for NaN/Inf values in floats, validates data types
 - **Output schema validation**: requires 2+ options with unique single-character hotkeys and non-empty labels
 - Validation occurs at both gRPC entry point and HTTP data serving
@@ -176,8 +182,14 @@ Migrated from vanilla JavaScript (~450 loc) to modern React + TypeScript:
 
 ### Component Architecture
 - **App.tsx** - React Query provider, retry configuration
-- **CollectorApp.tsx** - main application logic, data fetching orchestration
-- **GridVisualization.tsx** - renders grid input data with modern card-based styling
+- **CollectorApp.tsx** - main application logic, data fetching orchestration, handles multiple inputs
+- **VisualizationLayout.tsx** - dynamic layout manager for 1-N visualizations (grid, side-by-side, 2x2, etc.)
+- **VisualizationRenderer.tsx** - router component that selects appropriate visualization based on type
+- **GridVisualization.tsx** - renders 2D grid data with table-based styling
+- **MultiChannelGridVisualization.tsx** - renders RGB/multi-channel data on HTML5 canvas
+- **ScalarVisualization.tsx** - progress bar visualization for single values with labels/units
+- **Vector2DVisualization.tsx** - arrow visualization on coordinate system with magnitude display
+- **TimeSeriesVisualization.tsx** - line chart with grid lines and statistical summaries
 - **OptionList.tsx** - interactive option cards with hover effects and visible hotkeys
 - **QueueStatus.tsx** - real-time queue statistics with live indicator
 - **StateNotifier.tsx** - application state messages with icons and color coding

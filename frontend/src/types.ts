@@ -3,16 +3,51 @@ export interface GridVisualization {
   cols: number;
 }
 
+export interface MultiChannelGridVisualization {
+  rows: number;
+  cols: number;
+  channels: number;
+  channelNames: string[];
+}
+
+export interface ScalarVisualization {
+  label: string;
+  min: number;
+  max: number;
+  unit: string;
+}
+
+export interface Vector2DVisualization {
+  label: string;
+  maxMagnitude: number;
+}
+
+export interface TimeSeriesVisualization {
+  label: string;
+  points: number;
+  minValue: number;
+  maxValue: number;
+}
+
 export interface Visualization {
   Grid?: GridVisualization;
+  MultiGrid?: MultiChannelGridVisualization;
+  Scalar?: ScalarVisualization;
+  Vector?: Vector2DVisualization;
+  TimeSeries?: TimeSeriesVisualization;
 }
 
 export interface IntData {
   values: number[];
 }
 
+export interface FloatData {
+  values: number[];
+}
+
 export interface Data {
   Ints?: IntData;
+  Floats?: FloatData;
 }
 
 export interface InputData {
