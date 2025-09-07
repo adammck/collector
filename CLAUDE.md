@@ -109,6 +109,13 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Context cancellation properly cleans up queue items and pending requests
 - **No panic recovery**: system fails fast rather than attempting recovery from unknown state
 
+### Pre-commit Checklist
+**ALWAYS** before committing changes:
+1. **Check IDE diagnostics** - resolve all compilation errors and warnings
+2. **Run tests** - `./bin/test.sh` must pass with no failures
+3. **Verify coverage** - ensure test coverage remains reasonable (target 65%+)
+4. **Architecture alignment** - ensure tests match current queue-based architecture (not old pending/waiter system)
+
 ## Queue System
 
 ### Queue Operations
