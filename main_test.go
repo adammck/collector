@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -1328,5 +1329,529 @@ func TestCollectorValidationFailure(t *testing.T) {
 	// should be grpc invalid argument error
 	if !strings.Contains(err.Error(), "request must have at least one input") {
 		t.Fatalf("expected validation error message, got: %v", err)
+	}
+}
+
+// error helper tests
+
+func TestErrorHelpers(t *testing.T) {
+	t.Run("notFoundError", func(t *testing.T) {
+		err := notFoundError("request", "test-uuid")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		st := status.Convert(err)
+		if st.Code().String() != "NotFound" {
+			t.Errorf("expected status NotFound, got %s", st.Code().String())
+		}
+
+		if !strings.Contains(st.Message(), "request not found: test-uuid") {
+			t.Errorf("expected message to contain 'request not found: test-uuid', got: %s", st.Message())
+		}
+	})
+
+	t.Run("timeoutError", func(t *testing.T) {
+		err := timeoutError("collect")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		st := status.Convert(err)
+		if st.Code().String() != "DeadlineExceeded" {
+			t.Errorf("expected status DeadlineExceeded, got %s", st.Code().String())
+		}
+
+		if !strings.Contains(st.Message(), "collect timed out") {
+			t.Errorf("expected message to contain 'collect timed out', got: %s", st.Message())
+		}
+	})
+
+	t.Run("internalError", func(t *testing.T) {
+		testErr := fmt.Errorf("something went wrong")
+		err := internalError(testErr)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		st := status.Convert(err)
+		if st.Code().String() != "Internal" {
+			t.Errorf("expected status Internal, got %s", st.Code().String())
+		}
+
+		if !strings.Contains(st.Message(), "internal error: something went wrong") {
+			t.Errorf("expected message to contain 'internal error: something went wrong', got: %s", st.Message())
+		}
+	})
+
+	t.Run("resourceExhaustedError", func(t *testing.T) {
+		err := resourceExhaustedError("queue")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+
+		st := status.Convert(err)
+		if st.Code().String() != "ResourceExhausted" {
+			t.Errorf("expected status ResourceExhausted, got %s", st.Code().String())
+		}
+
+		if !strings.Contains(st.Message(), "queue limit exceeded") {
+			t.Errorf("expected message to contain 'queue limit exceeded', got: %s", st.Message())
+		}
+	})
+}
+
+func TestHandleDefer(t *testing.T) {
+	s := newTestServer()
+	
+	// create and enqueue test request
+	testReq := newTestRequest()
+	resCh := make(chan *pb.Response, 1)
+	testUUID := "test-uuid"
+
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  testReq,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
+
+	s.queue.Enqueue(item)
+
+	// add a second item so defer has something to serve
+	item2 := &QueueItem{
+		ID:       "test-uuid-2",
+		Request:  newTestRequest(),
+		Response: make(chan *pb.Response, 1),
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
+	s.queue.Enqueue(item2)
+
+	// defer the item
+	req := httptest.NewRequest("POST", "/defer/"+testUUID, nil)
+	w := httptest.NewRecorder()
+	req.SetPathValue("uuid", testUUID)
+
+	s.handleDefer(w, req)
+
+	// handleDefer should succeed and serve the next available item
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	// verify that a response was served (should contain uuid field)
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if _, hasUUID := response["uuid"]; !hasUUID {
+		t.Error("expected response to contain uuid field")
+	}
+}
+
+func TestHandleDeferInvalidUUID(t *testing.T) {
+	s := newTestServer()
+
+	req := httptest.NewRequest("POST", "/defer/nonexistent", nil)
+	w := httptest.NewRecorder()
+	req.SetPathValue("uuid", "nonexistent")
+
+	s.handleDefer(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", w.Code)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	// check that we got an error response (exact code depends on error format)
+	if response["code"] == nil {
+		t.Error("expected error code field to exist")
+	}
+}
+
+func TestWebRequestMarshalJSONExtended(t *testing.T) {
+	testReq := newTestRequest()
+	
+	wr := &webRequest{
+		UUID:  "test-uuid-123",
+		Proto: testReq,
+		Queue: QueueStatus{
+			Total:    5,
+			Active:   3,
+			Deferred: 2,
+		},
+	}
+
+	data, err := wr.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("failed to unmarshal result: %v", err)
+	}
+
+	// check uuid
+	if result["uuid"] != "test-uuid-123" {
+		t.Errorf("expected uuid 'test-uuid-123', got %v", result["uuid"])
+	}
+
+	// check queue status
+	queue, ok := result["queue"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected queue to be a map")
+	}
+
+	if queue["total"] != float64(5) { // JSON numbers are float64
+		t.Errorf("expected total 5, got %v", queue["total"])
+	}
+	if queue["active"] != float64(3) {
+		t.Errorf("expected active 3, got %v", queue["active"])
+	}
+	if queue["deferred"] != float64(2) {
+		t.Errorf("expected deferred 2, got %v", queue["deferred"])
+	}
+
+	// check proto field exists (it's complex so just verify it's there)
+	if _, exists := result["proto"]; !exists {
+		t.Error("expected proto field to exist")
+	}
+}
+
+func TestValidateMultiChannelGrid(t *testing.T) {
+	tests := []struct {
+		name    string
+		grid    *pb.MultiChannelGrid
+		data    *pb.Data
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil grid",
+			grid:    nil,
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "multi-channel grid cannot be nil",
+		},
+		{
+			name:    "zero rows",
+			grid:    &pb.MultiChannelGrid{Rows: 0, Cols: 5, Channels: 3},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid dimensions must be positive",
+		},
+		{
+			name:    "zero channels",
+			grid:    &pb.MultiChannelGrid{Rows: 2, Cols: 2, Channels: 0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "channel count must be positive",
+		},
+		{
+			name:    "too many channels",
+			grid:    &pb.MultiChannelGrid{Rows: 2, Cols: 2, Channels: 11},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "too many channels (max 10, got 11)",
+		},
+		{
+			name: "wrong channel names length",
+			grid: &pb.MultiChannelGrid{
+				Rows:     2,
+				Cols:     2,
+				Channels: 3,
+				ChannelNames: []string{"R", "G"}, // should be 3
+			},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "channel names count 2 doesn't match channel count 3",
+		},
+		{
+			name: "wrong data size",
+			grid: &pb.MultiChannelGrid{Rows: 2, Cols: 2, Channels: 3},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: make([]float64, 10)}, // should be 2*2*3=12
+				},
+			},
+			wantErr: true,
+			errMsg:  "data size 10 doesn't match expected size 12 (rows*cols*channels=2*2*3)",
+		},
+		{
+			name: "valid multi channel grid",
+			grid: &pb.MultiChannelGrid{Rows: 2, Cols: 2, Channels: 3},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: make([]float64, 12)}, // 2*2*3=12
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMultiChannelGrid(tt.grid, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateMultiChannelGrid() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateScalar(t *testing.T) {
+	tests := []struct {
+		name    string
+		scalar  *pb.Scalar
+		data    *pb.Data
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil scalar",
+			scalar:  nil,
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "scalar cannot be nil",
+		},
+		{
+			name:    "empty label",
+			scalar:  &pb.Scalar{Label: "", Min: 0.0, Max: 1.0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "scalar label is required",
+		},
+		{
+			name:    "min >= max",
+			scalar:  &pb.Scalar{Label: "test", Min: 1.0, Max: 1.0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "scalar min 1.000000 must be less than max 1.000000",
+		},
+		{
+			name:   "wrong data size",
+			scalar: &pb.Scalar{Label: "test", Min: 0.0, Max: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{0.5, 0.6}}, // should be 1
+				},
+			},
+			wantErr: true,
+			errMsg:  "scalar requires exactly 1 float value (got 2)",
+		},
+		{
+			name:   "value out of range low",
+			scalar: &pb.Scalar{Label: "test", Min: 0.0, Max: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{-0.1}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "scalar value -0.100000 is outside range [0.000000, 1.000000]",
+		},
+		{
+			name:   "value out of range high",
+			scalar: &pb.Scalar{Label: "test", Min: 0.0, Max: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.1}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "scalar value 1.100000 is outside range [0.000000, 1.000000]",
+		},
+		{
+			name:   "valid scalar",
+			scalar: &pb.Scalar{Label: "test", Min: 0.0, Max: 1.0, Unit: "ratio"},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{0.5}},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateScalar(tt.scalar, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateScalar() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateVector2D(t *testing.T) {
+	tests := []struct {
+		name    string
+		vector  *pb.Vector2D
+		data    *pb.Data
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil vector",
+			vector:  nil,
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "vector cannot be nil",
+		},
+		{
+			name:    "empty label",
+			vector:  &pb.Vector2D{Label: "", MaxMagnitude: 1.0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "vector label is required",
+		},
+		{
+			name:    "zero max magnitude",
+			vector:  &pb.Vector2D{Label: "test", MaxMagnitude: 0.0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "vector max_magnitude must be positive (got 0.000000)",
+		},
+		{
+			name:   "wrong data size",
+			vector: &pb.Vector2D{Label: "test", MaxMagnitude: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{0.5}}, // should be 2
+				},
+			},
+			wantErr: true,
+			errMsg:  "vector requires exactly 2 float values (got 1)",
+		},
+		{
+			name:   "valid vector",
+			vector: &pb.Vector2D{Label: "velocity", MaxMagnitude: 10.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{3.0, 4.0}}, // magnitude = 5.0 < 10.0
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateVector2D(tt.vector, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateVector2D() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateTimeSeries(t *testing.T) {
+	tests := []struct {
+		name       string
+		timeSeries *pb.TimeSeries
+		data       *pb.Data
+		wantErr    bool
+		errMsg     string
+	}{
+		{
+			name:       "nil time series",
+			timeSeries: nil,
+			data:       &pb.Data{},
+			wantErr:    true,
+			errMsg:     "time series cannot be nil",
+		},
+		{
+			name:       "empty label",
+			timeSeries: &pb.TimeSeries{Label: "", Points: 100, MinValue: 0.0, MaxValue: 1.0},
+			data:       &pb.Data{},
+			wantErr:    true,
+			errMsg:     "time series label is required",
+		},
+		{
+			name:       "zero points",
+			timeSeries: &pb.TimeSeries{Label: "test", Points: 0, MinValue: 0.0, MaxValue: 1.0},
+			data:       &pb.Data{},
+			wantErr:    true,
+			errMsg:     "time series points must be positive (got 0)",
+		},
+		{
+			name:       "too many points",
+			timeSeries: &pb.TimeSeries{Label: "test", Points: 1001, MinValue: 0.0, MaxValue: 1.0},
+			data:       &pb.Data{},
+			wantErr:    true,
+			errMsg:     "time series has too many points (max 1000, got 1001)",
+		},
+		{
+			name:       "min >= max",
+			timeSeries: &pb.TimeSeries{Label: "test", Points: 100, MinValue: 1.0, MaxValue: 1.0},
+			data:       &pb.Data{},
+			wantErr:    true,
+			errMsg:     "time series min_value 1.000000 must be less than max_value 1.000000",
+		},
+		{
+			name:       "wrong data size",
+			timeSeries: &pb.TimeSeries{Label: "test", Points: 100, MinValue: 0.0, MaxValue: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: make([]float64, 50)}, // should be 100
+				},
+			},
+			wantErr: true,
+			errMsg:  "data size 50 doesn't match expected points 100",
+		},
+		{
+			name:       "value out of range",
+			timeSeries: &pb.TimeSeries{Label: "test", Points: 3, MinValue: 0.0, MaxValue: 1.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{0.5, 1.5, 0.3}}, // 1.5 is out of range
+				},
+			},
+			wantErr: true,
+			errMsg:  "time series value at index 1 (1.500000) is outside range [0.000000, 1.000000]",
+		},
+		{
+			name:       "valid time series",
+			timeSeries: &pb.TimeSeries{Label: "temperature", Points: 3, MinValue: -10.0, MaxValue: 40.0},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{20.5, 25.0, 18.3}},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTimeSeries(tt.timeSeries, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateTimeSeries() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
 	}
 }
