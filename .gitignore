@@ -1,5 +1,12 @@
 /collector
 /examples.jsonl
 
+# temporary plans
+.claude/plans
+
 # just temporary while i hack on this.
 /proto/gen/*.go
+
+# code coverage
+coverage.out
+coverage.html

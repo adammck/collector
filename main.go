@@ -32,12 +32,15 @@ type server struct {
 
 	waiters map[chan struct{}]struct{}
 	wmu     sync.Mutex
+
+	timeout time.Duration
 }
 
 func newServer() *server {
 	return &server{
 		pending: make(map[string]*pair),
 		waiters: make(map[chan struct{}]struct{}),
+		timeout: 30 * time.Second,
 	}
 }
 
@@ -99,7 +102,7 @@ func (s *server) getPendingRequest() (string, *pair, error) {
 		s.wmu.Unlock()
 	}()
 
-	timeout := time.After(30 * time.Second)
+	timeout := time.After(s.timeout)
 	for {
 		s.pmu.RLock()
 		uuid, p, ok := s.getRandomPending()

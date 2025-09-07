@@ -12,8 +12,26 @@ pixels first pass through a vision model. This program is intended to present
 me with the same input data that the control model gets, so I can provide
 examples based only on that.
 
+
+## Installation
+
+```console
+$ git clone ...
+$ brew install protoc-gen-go protoc-gen-go-grpc
+$ bin/gen-proto.sh
+```
+
+
+## Usage
+
+```console
+$ go run main.go
+```
+
+
 ## License
 
 MIT
+
 
 [rl-sandbox]: https://github.com/adammck/rl-sandbox
