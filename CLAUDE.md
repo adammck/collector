@@ -8,7 +8,7 @@ Use the single test runner script for consistent results:
 ./bin/test.sh
 ```
 
-This runs tests with race detection and generates coverage reports. Current coverage is 82.6% of the main package.
+This runs tests with race detection and generates coverage reports. Current coverage is 79.9% of the main package.
 
 ### Test Structure
 - `main_test.go` contains comprehensive unit and integration tests
@@ -24,6 +24,8 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Mock error readers with custom `Read()` method for testing error paths
 - Validation tests use table-driven approach with expected error message fragments
 - Test data must match grid dimensions (e.g., 10x10 grid needs 100 data values)
+- **Error response testing**: expect structured JSON errors, not plain text messages
+- **Status code changes**: missing UUID changed from 404→400, timeout errors changed from 404→408
 
 ## Architecture
 
@@ -57,8 +59,41 @@ This runs tests with race detection and generates coverage reports. Current cove
 - `bin/test.sh` - runs tests with coverage
 - protobuf files in `proto/` generate code in `proto/gen/`
 
+## Error Handling
+
+### gRPC Error Management
+- **Error helpers** (`errors.go`): proper grpc status codes with monitoring integration
+  - `validationError()` → InvalidArgument
+  - `notFoundError()` → NotFound  
+  - `timeoutError()` → DeadlineExceeded
+  - `internalError()` → Internal
+  - `resourceExhaustedError()` → ResourceExhausted
+- **Resource limits**: max 1000 pending requests to prevent memory exhaustion
+- **Request lifecycle**: proper cleanup on all exit paths with defer statements
+
+### HTTP Error Responses
+- **Structured JSON errors** (`http_errors.go`): consistent error format with code, message, and optional details
+- **Error categorization**: timeouts (408), validation errors (400), not found (404), internal errors (500)
+- **Client-friendly messages**: actionable error descriptions for debugging
+
+### Client Retry Logic
+- **Exponential backoff** (`client/retry.go`): configurable retry with increasing delays
+- **Retryable codes**: Unavailable, ResourceExhausted, DeadlineExceeded
+- **Circuit breaker pattern**: max attempts with backoff multiplier and ceiling
+
+### JavaScript Error Handling  
+- **Automatic retry**: network errors and timeouts trigger exponential backoff
+- **Error categorization**: distinguishes between client errors, server errors, and network issues
+- **User feedback**: clear state messages with retry indication
+
+### Monitoring
+- **Error statistics** (`monitoring.go`): atomic counters for different error types
+- **Error tracking**: validation, timeout, internal, and resource exhaustion metrics
+- **Performance monitoring**: integrated into error helper functions
+
 ## Development Notes
 - Main function starts both HTTP (port 8000) and gRPC (port 50051) servers
 - Static files served from `./static/` directory
 - Concurrent access tested extensively - no race conditions detected
 - Context cancellation properly cleans up pending requests
+- **No panic recovery**: system fails fast rather than attempting recovery from unknown state
