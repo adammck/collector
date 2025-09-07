@@ -57,10 +57,11 @@ The dev server runs on port 5173 with proxy to the Go backend.
 ### Web Interface
 
 **Modern React frontend** (migrated from vanilla JS in 2024):
-- **Input visualization**: 2D grids with proper styling and responsive layout
-- **Response options**: buttons with keyboard shortcuts and hotkey support
-- **Queue status**: real-time display of active, deferred, and total items
-- **State notifications**: clear feedback for loading, errors, and user actions
+- **Professional dashboard**: header, main content panels, and footer layout
+- **Input visualization**: bordered grid cards with size indicators and hover effects
+- **Interactive options**: gradient-styled cards with visible keyboard shortcuts
+- **Live status indicators**: animated queue status and color-coded state messages
+- **Modern design**: Inter font, gradients, shadows, and smooth transitions
 - **TypeScript**: full type safety for all API interactions and UI components
 
 ### Keyboard Shortcuts

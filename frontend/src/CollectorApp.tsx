@@ -102,40 +102,83 @@ export function CollectorApp() {
   const isSubmitting = state === 'submitting';
 
   return (
-    <div className="h-screen flex flex-col">
-      <div className="flex flex-1">
-        <div className="w-1/2 bg-gray-100">
-          {input && <GridVisualization input={input} />}
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-gray-100">
+      {/* Header */}
+      <div className="bg-white shadow-md border-b border-gray-200">
+        <div className="px-6 py-4">
+          <h1 className="text-2xl font-bold text-gray-800">Collector</h1>
+          <p className="text-sm text-gray-600">Human-in-the-loop data collection interface</p>
         </div>
-        <div className="w-1/2 bg-white flex justify-center items-center">
-          {output && (
-            <OptionList
-              output={output}
-              disabled={isSubmitting}
-              onSubmit={handleSubmit}
-            />
-          )}
+      </div>
+
+      {/* Main Content */}
+      <div className="flex flex-1 gap-6 p-6">
+        {/* Left Panel - Grid Visualization */}
+        <div className="flex-1 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+          <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-800">Input Data</h2>
+            <p className="text-sm text-gray-600">Grid visualization of the current data sample</p>
+          </div>
+          <div className="p-6">
+            {input ? (
+              <GridVisualization input={input} />
+            ) : (
+              <div className="flex items-center justify-center h-64 text-gray-500">
+                <div className="text-center">
+                  <div className="text-4xl mb-2">📊</div>
+                  <div>No data available</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right Panel - Options */}
+        <div className="w-96 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+          <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-800">Response Options</h2>
+            <p className="text-sm text-gray-600">Select your response or use keyboard shortcuts</p>
+          </div>
+          <div className="p-6">
+            {output ? (
+              <OptionList
+                output={output}
+                disabled={isSubmitting}
+                onSubmit={handleSubmit}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-64 text-gray-500">
+                <div className="text-center">
+                  <div className="text-4xl mb-2">⏳</div>
+                  <div>Waiting for options</div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       
-      <div className="h-25 bg-gray-200 flex items-center justify-between px-5">
-        <QueueStatus />
-        <StateNotifier />
-        <div className="flex gap-2">
-          <button
-            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-            onClick={handleNext}
-          >
-            Fetch Data
-          </button>
-          <button
-            className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600"
-            onClick={handleDefer}
-            disabled={!currentUUID}
-            title="Ctrl+D"
-          >
-            Defer
-          </button>
+      {/* Footer */}
+      <div className="bg-white shadow-md border-t border-gray-200">
+        <div className="px-6 py-4 flex items-center justify-between">
+          <QueueStatus />
+          <StateNotifier />
+          <div className="flex gap-3">
+            <button
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm font-medium"
+              onClick={handleNext}
+            >
+              Fetch Data
+            </button>
+            <button
+              className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors shadow-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={handleDefer}
+              disabled={!currentUUID}
+              title="Ctrl+D"
+            >
+              Defer
+            </button>
+          </div>
         </div>
       </div>
     </div>

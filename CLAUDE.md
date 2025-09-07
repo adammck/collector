@@ -169,18 +169,27 @@ Migrated from vanilla JavaScript (~450 loc) to modern React + TypeScript:
 - **Zustand** - lightweight client state (current UUID, app state, queue status)
 
 ### Build System
-- **Development**: `cd frontend && npm run dev` (with Vite dev server)
+- **Development**: `cd frontend && npm run dev` (with Vite dev server and API proxy)
 - **Production**: `cd frontend && npm run build` → outputs to `frontend/dist/`
 - **Server integration**: Go server serves static files from `./frontend/dist/`
+- **Proxy configuration**: Vite dev server proxies API calls to Go backend on port 8000
 
 ### Component Architecture
 - **App.tsx** - React Query provider, retry configuration
 - **CollectorApp.tsx** - main application logic, data fetching orchestration
-- **GridVisualization.tsx** - renders grid input data with proper styling
-- **OptionList.tsx** - option buttons with hotkey support
-- **QueueStatus.tsx** - real-time queue statistics display
-- **StateNotifier.tsx** - application state messages
+- **GridVisualization.tsx** - renders grid input data with modern card-based styling
+- **OptionList.tsx** - interactive option cards with hover effects and visible hotkeys
+- **QueueStatus.tsx** - real-time queue statistics with live indicator
+- **StateNotifier.tsx** - application state messages with icons and color coding
 - **useKeyboardShortcuts** - custom hook for Ctrl+D/Ctrl+N shortcuts
+
+### Visual Design (2024)
+- **Professional UI**: dashboard layout with header, main content panels, and footer
+- **Modern Styling**: gradients, shadows, rounded corners, and proper spacing
+- **Typography**: Inter font integration for improved readability
+- **Interactive Elements**: hover effects, transitions, and proper disabled states
+- **Color System**: semantic color coding for states (green=ready, amber=waiting, red=error)
+- **Responsive Layout**: card-based panels with proper visual hierarchy
 
 ### Type Safety
 - **types.ts** - comprehensive TypeScript interfaces matching protobuf structures

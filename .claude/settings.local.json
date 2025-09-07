@@ -18,7 +18,8 @@
       "Bash(npm install:*)",
       "Bash(npx tailwindcss init:*)",
       "Bash(npm run build:*)",
-      "Bash(./collector)"
+      "Bash(./collector)",
+      "Bash(npm run lint)"
     ],
     "deny": [],
     "ask": []
