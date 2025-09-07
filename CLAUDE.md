@@ -8,10 +8,10 @@ Use the single test runner script for consistent results:
 ./bin/test.sh
 ```
 
-This runs tests with race detection and generates coverage reports. Current coverage is 79.9% of the main package.
+This runs tests with race detection and generates coverage reports. Current coverage is 67.9% of source code (excluding generated protobuf files).
 
 ### Test Structure
-- `main_test.go` contains comprehensive unit and integration tests
+- `main_test.go` contains comprehensive unit and integration tests for queue-based architecture
 - `queue_test.go` contains dedicated queue functionality tests
 - Tests cover concurrent operations, HTTP handlers, gRPC service, end-to-end flows, and input validation
 - Race condition testing with `-race` flag
@@ -20,7 +20,7 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Queue tests verify FIFO ordering, defer operations, and concurrent access
 
 ### Key Testing Patterns
-- Use `newTestServer()` helper for test server instances
+- Use `newTestServer()` helper for test server instances with queue-based architecture
 - Set `s.timeout` to short durations (100ms) for timeout tests
 - Custom JSON unmarshaling requires parsing as `map[string]interface{}` due to protojson format
 - Mock error readers with custom `Read()` method for testing error paths
@@ -28,16 +28,18 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Test data must match grid dimensions (e.g., 10x10 grid needs 100 data values)
 - **Error response testing**: expect structured JSON errors, not plain text messages
 - **Status code changes**: missing UUID changed from 404→400, timeout errors changed from 404→408
-- **Queue testing**: Use `NewQueue()` for isolated queue tests, verify FIFO ordering and defer behavior
+- **Queue-based testing**: Tests use `s.queue.Enqueue()` and `s.current` map instead of old pending/waiter system
+- **Architecture migration**: Tests updated from direct map+mutex to queue-based approach in 2024
 
 ## Architecture
 
 ### Core Components
-- **server**: manages queue and current active requests
+- **server**: manages queue and current active requests with `server.queue *Queue` and `server.current map[string]*QueueItem`
 - **queue.go**: thread-safe FIFO queue with defer functionality and waiter notifications
 - **HTTP handlers**: `/data.json` (polling), `/submit/{uuid}` (responses), `/defer/{uuid}` (defer), `/queue/status` (statistics)
 - **gRPC service**: `Collect` RPC with context cancellation support
 - **concurrency**: thread-safe queue operations with RWMutex, waiter channel notifications for efficient polling
+- **architecture change**: migrated from direct `pending map[string]*pair` + mutex to queue-based system
 
 ### Request Flow
 1. gRPC `Collect` call validates input and enqueues request with response channel

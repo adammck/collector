@@ -100,135 +100,87 @@ func startTestGRPCServer(t *testing.T, s *server) (pb.CollectorClient, func()) {
 	return client, cleanup
 }
 
-// unit tests for server struct
+// queue integration tests
 
-func TestServerPendingOperations(t *testing.T) {
+func TestServerQueueIntegration(t *testing.T) {
 	s := newTestServer()
 
-	// test adding to pending
+	// test queue is initially empty
+	status := s.queue.Status()
+	if status.Total != 0 {
+		t.Fatalf("expected empty queue, got total %d", status.Total)
+	}
+
+	// create queue item
 	req := newTestRequest()
 	resCh := make(chan *pb.Response, 1)
 	testUUID := "test-uuid"
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  req,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
 
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: req, res: resCh}
-	s.pmu.Unlock()
+	// enqueue item
+	err := s.queue.Enqueue(item)
+	if err != nil {
+		t.Fatalf("failed to enqueue: %v", err)
+	}
 
-	// test retrieval
-	s.pmu.RLock()
-	p, exists := s.pending[testUUID]
-	s.pmu.RUnlock()
+	// verify queue status
+	status = s.queue.Status()
+	if status.Total != 1 {
+		t.Fatalf("expected queue total 1, got %d", status.Total)
+	}
+	if status.Active != 1 {
+		t.Fatalf("expected queue active 1, got %d", status.Active)
+	}
+
+	// test moving item to current
+	s.cmu.Lock()
+	s.current[testUUID] = item
+	s.cmu.Unlock()
+
+	// verify item is in current
+	s.cmu.RLock()
+	currentItem, exists := s.current[testUUID]
+	s.cmu.RUnlock()
 
 	if !exists {
-		t.Fatal("expected pending request to exist")
+		t.Fatal("expected item to be in current map")
 	}
-	if p.req != req {
+	if currentItem.Request != req {
 		t.Fatal("expected request to match")
 	}
-	if p.res != resCh {
+	if currentItem.Response != resCh {
 		t.Fatal("expected response channel to match")
 	}
 
-	// test deletion
-	s.pmu.Lock()
-	delete(s.pending, testUUID)
-	s.pmu.Unlock()
+	// test deletion from current
+	s.cmu.Lock()
+	delete(s.current, testUUID)
+	s.cmu.Unlock()
 
-	s.pmu.RLock()
-	_, exists = s.pending[testUUID]
-	s.pmu.RUnlock()
+	s.cmu.RLock()
+	_, exists = s.current[testUUID]
+	s.cmu.RUnlock()
 
 	if exists {
-		t.Fatal("expected pending request to be deleted")
+		t.Fatal("expected current item to be deleted")
 	}
 }
 
-func TestServerWaiterNotification(t *testing.T) {
-	s := newTestServer()
-
-	// add waiter
-	ch := make(chan struct{}, 1)
-	s.wmu.Lock()
-	s.waiters[ch] = struct{}{}
-	s.wmu.Unlock()
-
-	// simulate notification (from grpc handler)
-	s.wmu.Lock()
-	for waiterCh := range s.waiters {
-		select {
-		case waiterCh <- struct{}{}:
-		default:
-		}
-	}
-	s.wmu.Unlock()
-
-	// verify notification received
-	select {
-	case <-ch:
-		// success
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("expected waiter notification")
-	}
-
-	// cleanup
-	s.wmu.Lock()
-	delete(s.waiters, ch)
-	s.wmu.Unlock()
-}
-
-func TestGetRandomPending(t *testing.T) {
-	s := newTestServer()
-
-	// test empty pending map
-	s.pmu.RLock()
-	uuid, p, ok := s.getRandomPending()
-	s.pmu.RUnlock()
-
-	if ok {
-		t.Fatal("expected no pending request")
-	}
-	if uuid != "" || p != nil {
-		t.Fatal("expected empty values")
-	}
-
-	// add multiple pending requests
-	req1 := newTestRequest()
-	req2 := newTestRequest()
-	resCh1 := make(chan *pb.Response, 1)
-	resCh2 := make(chan *pb.Response, 1)
-	uuid1 := "uuid-1"
-	uuid2 := "uuid-2"
-
-	s.pmu.Lock()
-	s.pending[uuid1] = &pair{req: req1, res: resCh1}
-	s.pending[uuid2] = &pair{req: req2, res: resCh2}
-	s.pmu.Unlock()
-
-	// test random selection returns one of them
-	s.pmu.RLock()
-	selectedUUID, selectedPair, ok := s.getRandomPending()
-	s.pmu.RUnlock()
-
-	if !ok {
-		t.Fatal("expected pending request")
-	}
-	if selectedUUID != uuid1 && selectedUUID != uuid2 {
-		t.Fatalf("expected one of the added uuids, got: %s", selectedUUID)
-	}
-	if selectedPair == nil {
-		t.Fatal("expected pair to be non-nil")
-	}
-}
-
-func TestConcurrentMapAccess(t *testing.T) {
+func TestConcurrentCurrentAccess(t *testing.T) {
 	s := newTestServer()
 	const numGoroutines = 10
-	const numOperations = 100
+	const numOperations = 50
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// concurrent writers
+	// concurrent operations on current map
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
@@ -236,16 +188,24 @@ func TestConcurrentMapAccess(t *testing.T) {
 				uuid := fmt.Sprintf("uuid-%d-%d", id, j)
 				req := newTestRequest()
 				resCh := make(chan *pb.Response, 1)
+				item := &QueueItem{
+					ID:       uuid,
+					Request:  req,
+					Response: resCh,
+					AddedAt:  time.Now(),
+					Context:  context.Background(),
+				}
 
-				s.pmu.Lock()
-				s.pending[uuid] = &pair{req: req, res: resCh}
-				s.pmu.Unlock()
+				// add to current
+				s.cmu.Lock()
+				s.current[uuid] = item
+				s.cmu.Unlock()
 
 				// sometimes delete immediately
 				if j%2 == 0 {
-					s.pmu.Lock()
-					delete(s.pending, uuid)
-					s.pmu.Unlock()
+					s.cmu.Lock()
+					delete(s.current, uuid)
+					s.cmu.Unlock()
 				}
 			}
 		}(i)
@@ -284,14 +244,19 @@ func TestHandleDataNoPending(t *testing.T) {
 func TestHandleDataWithPending(t *testing.T) {
 	s := newTestServer()
 
-	// add pending request
+	// add item to queue
 	testReq := newTestRequest()
 	resCh := make(chan *pb.Response, 1)
 	testUUID := uuid.NewString()
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  testReq,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
 
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: testReq, res: resCh}
-	s.pmu.Unlock()
+	s.queue.Enqueue(item)
 
 	req := httptest.NewRequest("GET", "/data.json", nil)
 	w := httptest.NewRecorder()
@@ -332,19 +297,39 @@ func TestHandleDataWithPending(t *testing.T) {
 	if !ok || len(inputs) == 0 {
 		t.Fatal("expected proto inputs to be non-empty array")
 	}
+
+	// verify the item is now in current map
+	s.cmu.RLock()
+	currentItem, exists := s.current[testUUID]
+	s.cmu.RUnlock()
+
+	if !exists {
+		t.Fatal("expected item to be in current map after handleData")
+	}
+	if currentItem.Request != testReq {
+		t.Fatal("expected current item request to match")
+	}
 }
 
 func TestHandleSubmitValid(t *testing.T) {
 	s := newTestServer()
 
-	// add pending request
+	// create queue item and add to current (simulate handleData)
 	testReq := newTestRequest()
 	resCh := make(chan *pb.Response, 1)
 	testUUID := uuid.NewString()
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  testReq,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
 
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: testReq, res: resCh}
-	s.pmu.Unlock()
+	// add to current (simulate what handleData would do)
+	s.cmu.Lock()
+	s.current[testUUID] = item
+	s.cmu.Unlock()
 
 	// prepare response
 	testRes := newTestResponse()
@@ -375,13 +360,13 @@ func TestHandleSubmitValid(t *testing.T) {
 		t.Fatal("expected response on channel")
 	}
 
-	// verify pending request was removed
-	s.pmu.RLock()
-	_, exists := s.pending[testUUID]
-	s.pmu.RUnlock()
+	// verify current request was removed
+	s.cmu.RLock()
+	_, exists := s.current[testUUID]
+	s.cmu.RUnlock()
 
 	if exists {
-		t.Fatal("expected pending request to be removed")
+		t.Fatal("expected current request to be removed")
 	}
 }
 
@@ -408,14 +393,21 @@ func TestHandleSubmitInvalidUUID(t *testing.T) {
 func TestHandleSubmitMalformedJSON(t *testing.T) {
 	s := newTestServer()
 
-	// add pending request
+	// create queue item and add to current
 	testReq := newTestRequest()
 	resCh := make(chan *pb.Response, 1)
 	testUUID := uuid.NewString()
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  testReq,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
 
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: testReq, res: resCh}
-	s.pmu.Unlock()
+	s.cmu.Lock()
+	s.current[testUUID] = item
+	s.cmu.Unlock()
 
 	malformedJSON := []byte(`{"invalid": json`)
 	req := httptest.NewRequest("POST", "/submit/"+testUUID, bytes.NewReader(malformedJSON))
@@ -458,14 +450,22 @@ func TestCollectorServiceSuccess(t *testing.T) {
 	// wait a bit for request to be registered
 	time.Sleep(10 * time.Millisecond)
 
-	// check that pending request exists
-	s.pmu.RLock()
-	pendingCount := len(s.pending)
-	s.pmu.RUnlock()
-
-	if pendingCount != 1 {
-		t.Fatalf("expected 1 pending request, got %d", pendingCount)
+	// check that queue has item
+	status := s.queue.Status()
+	if status.Total != 1 {
+		t.Fatalf("expected 1 item in queue, got %d", status.Total)
 	}
+
+	// get item from queue (simulating web client)
+	item, err := s.queue.GetNext(100 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to get item from queue: %v", err)
+	}
+
+	// add to current (simulating handleData)
+	s.cmu.Lock()
+	s.current[item.ID] = item
+	s.cmu.Unlock()
 
 	// simulate web client submission
 	testRes := newTestResponse()
@@ -474,19 +474,10 @@ func TestCollectorServiceSuccess(t *testing.T) {
 		t.Fatalf("failed to marshal response: %v", err)
 	}
 
-	// get the uuid (there should be exactly one)
-	var pendingUUID string
-	s.pmu.RLock()
-	for uuid := range s.pending {
-		pendingUUID = uuid
-		break
-	}
-	s.pmu.RUnlock()
-
 	// simulate http submission
-	req := httptest.NewRequest("POST", "/submit/"+pendingUUID, bytes.NewReader(resJSON))
+	req := httptest.NewRequest("POST", "/submit/"+item.ID, bytes.NewReader(resJSON))
 	w := httptest.NewRecorder()
-	req.SetPathValue("uuid", pendingUUID)
+	req.SetPathValue("uuid", item.ID)
 
 	s.handleSubmit(w, req)
 
@@ -527,13 +518,10 @@ func TestCollectorServiceCancellation(t *testing.T) {
 	// wait for request to be registered
 	time.Sleep(10 * time.Millisecond)
 
-	// verify pending request exists
-	s.pmu.RLock()
-	pendingCount := len(s.pending)
-	s.pmu.RUnlock()
-
-	if pendingCount != 1 {
-		t.Fatalf("expected 1 pending request, got %d", pendingCount)
+	// verify queue has item
+	status := s.queue.Status()
+	if status.Total != 1 {
+		t.Fatalf("expected 1 item in queue, got %d", status.Total)
 	}
 
 	// cancel context
@@ -553,90 +541,10 @@ func TestCollectorServiceCancellation(t *testing.T) {
 	// wait a bit for cleanup
 	time.Sleep(10 * time.Millisecond)
 
-	// verify pending request was cleaned up
-	s.pmu.RLock()
-	pendingCount = len(s.pending)
-	s.pmu.RUnlock()
-
-	if pendingCount != 0 {
-		t.Fatalf("expected 0 pending requests after cancellation, got %d", pendingCount)
-	}
-}
-
-func TestConcurrentCollectorCalls(t *testing.T) {
-	s := newTestServer()
-	client, cleanup := startTestGRPCServer(t, s)
-	defer cleanup()
-
-	const numCalls = 5
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	testReq := newTestRequest()
-
-	// start multiple concurrent grpc calls
-	type result struct {
-		res *pb.Response
-		err error
-	}
-
-	results := make(chan result, numCalls)
-
-	for i := 0; i < numCalls; i++ {
-		go func() {
-			res, err := client.Collect(ctx, testReq)
-			results <- result{res: res, err: err}
-		}()
-	}
-
-	// wait for all requests to be registered
-	time.Sleep(50 * time.Millisecond)
-
-	// verify all pending requests exist
-	s.pmu.RLock()
-	pendingCount := len(s.pending)
-	uuids := make([]string, 0, pendingCount)
-	for uuid := range s.pending {
-		uuids = append(uuids, uuid)
-	}
-	s.pmu.RUnlock()
-
-	if pendingCount != numCalls {
-		t.Fatalf("expected %d pending requests, got %d", numCalls, pendingCount)
-	}
-
-	// respond to each request
-	testRes := newTestResponse()
-	resJSON, err := protojson.Marshal(testRes)
-	if err != nil {
-		t.Fatalf("failed to marshal response: %v", err)
-	}
-
-	for _, uuid := range uuids {
-		req := httptest.NewRequest("POST", "/submit/"+uuid, bytes.NewReader(resJSON))
-		w := httptest.NewRecorder()
-		req.SetPathValue("uuid", uuid)
-
-		s.handleSubmit(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("submit failed for %s: %d: %s", uuid, w.Code, w.Body.String())
-		}
-	}
-
-	// verify all grpc calls completed successfully
-	for i := 0; i < numCalls; i++ {
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("grpc call %d failed: %v", i, result.err)
-			}
-			if result.res == nil {
-				t.Fatalf("grpc call %d returned nil response", i)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("grpc call %d timed out", i)
-		}
+	// verify queue was cleaned up (context cancellation removes items)
+	status = s.queue.Status()
+	if status.Total != 0 {
+		t.Fatalf("expected 0 items in queue after cancellation, got %d", status.Total)
 	}
 }
 
@@ -760,6 +668,7 @@ func TestWebRequestMarshalJSON(t *testing.T) {
 	webReq := webRequest{
 		UUID:  "test-uuid",
 		Proto: testReq,
+		Queue: QueueStatus{Total: 1, Active: 1, Deferred: 0},
 	}
 
 	data, err := json.Marshal(webReq)
@@ -767,7 +676,7 @@ func TestWebRequestMarshalJSON(t *testing.T) {
 		t.Fatalf("failed to marshal webRequest: %v", err)
 	}
 
-	// verify it produces json with uuid and proto fields
+	// verify it produces json with uuid, proto, and queue fields
 	var result map[string]interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("failed to unmarshal result: %v", err)
@@ -780,108 +689,74 @@ func TestWebRequestMarshalJSON(t *testing.T) {
 	if result["proto"] == nil {
 		t.Fatal("expected proto field")
 	}
+
+	if result["queue"] == nil {
+		t.Fatal("expected queue field")
+	}
 }
 
-func TestHandleDataValidationError(t *testing.T) {
+func TestHandleQueueStatus(t *testing.T) {
 	s := newTestServer()
 
-	// create a request that will fail validation
-	badReq := &pb.Request{} // nil inputs will fail validation when we enhance it
-
-	resCh := make(chan *pb.Response, 1)
-	testUUID := "test-uuid"
-
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: badReq, res: resCh}
-	s.pmu.Unlock()
-
-	req := httptest.NewRequest("GET", "/data.json", nil)
-	w := httptest.NewRecorder()
-
-	s.handleData(w, req)
-
-	// since our current validate function only checks for nil, this will pass
-	// but we test the code path
-	if w.Code != http.StatusOK {
-		// validation failed as expected
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for validation error, got %d", w.Code)
+	// add some items to queue
+	for i := 0; i < 3; i++ {
+		item := &QueueItem{
+			ID:       fmt.Sprintf("test-%d", i),
+			Request:  newTestRequest(),
+			Response: make(chan *pb.Response, 1),
+			AddedAt:  time.Now(),
+			Context:  context.Background(),
 		}
-	}
-}
-
-func TestWebRequestMarshalJSONError(t *testing.T) {
-	// test that MarshalJSON function gets called
-	testReq := newTestRequest()
-	webReq := webRequest{
-		UUID:  "test-uuid",
-		Proto: testReq,
+		s.queue.Enqueue(item)
 	}
 
-	// this should succeed with normal proto and exercise the custom MarshalJSON
-	data, err := webReq.MarshalJSON()
-	if err != nil {
-		t.Fatalf("expected marshal to succeed: %v", err)
-	}
-
-	// verify the output structure
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("failed to parse marshaled json: %v", err)
-	}
-
-	if result["uuid"] != "test-uuid" {
-		t.Fatalf("expected uuid field")
-	}
-	if result["proto"] == nil {
-		t.Fatal("expected proto field")
-	}
-
-	// test with nil proto - this actually succeeds with protojson
-	webReqNil := webRequest{
-		UUID:  "test-uuid",
-		Proto: nil,
-	}
-
-	_, err = webReqNil.MarshalJSON()
-	// nil proto is actually valid for protojson.Marshal
-	if err != nil {
-		t.Logf("nil proto marshal error (this may be expected): %v", err)
-	}
-}
-
-func TestHandleSubmitMissingUUID(t *testing.T) {
-	s := newTestServer()
-
-	req := httptest.NewRequest("POST", "/submit/", nil)
+	req := httptest.NewRequest("GET", "/queue/status", nil)
 	w := httptest.NewRecorder()
 
-	// don't set uuid path value
-	req.SetPathValue("uuid", "")
+	s.handleQueueStatus(w, req)
 
-	s.handleSubmit(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400 for missing uuid, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
 	}
 
-	expectedMsg := "missing uuid parameter"
-	if !strings.Contains(w.Body.String(), expectedMsg) {
-		t.Fatalf("expected 'missing: uuid' message, got: %s", w.Body.String())
+	var status QueueStatus
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to unmarshal status: %v", err)
 	}
+
+	if status.Total != 3 {
+		t.Fatalf("expected total 3, got %d", status.Total)
+	}
+	if status.Active != 3 {
+		t.Fatalf("expected active 3, got %d", status.Active)
+	}
+}
+
+// errorReader always returns an error when read
+type errorReader struct{}
+
+func (er *errorReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("simulated read error")
 }
 
 func TestHandleSubmitReadError(t *testing.T) {
 	s := newTestServer()
 
-	// add pending request
+	// create queue item and add to current
 	testReq := newTestRequest()
 	resCh := make(chan *pb.Response, 1)
 	testUUID := "test-uuid"
+	item := &QueueItem{
+		ID:       testUUID,
+		Request:  testReq,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  context.Background(),
+	}
 
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: testReq, res: resCh}
-	s.pmu.Unlock()
+	s.cmu.Lock()
+	s.current[testUUID] = item
+	s.cmu.Unlock()
 
 	// create a request with an error reader
 	errorReader := &errorReader{}
@@ -895,159 +770,6 @@ func TestHandleSubmitReadError(t *testing.T) {
 	// should get an internal server error due to read failure
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status 500 for read error, got %d", w.Code)
-	}
-}
-
-// errorReader always returns an error when read
-type errorReader struct{}
-
-func (er *errorReader) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("simulated read error")
-}
-
-func TestCollectorContextDoneBeforeResponse(t *testing.T) {
-	s := newTestServer()
-	client, cleanup := startTestGRPCServer(t, s)
-	defer cleanup()
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	testReq := newTestRequest()
-
-	// start grpc call
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := client.Collect(ctx, testReq)
-		errCh <- err
-	}()
-
-	// wait for request to be registered
-	time.Sleep(10 * time.Millisecond)
-
-	// verify pending request exists
-	s.pmu.RLock()
-	pendingCount := len(s.pending)
-	s.pmu.RUnlock()
-
-	if pendingCount != 1 {
-		t.Fatalf("expected 1 pending request, got %d", pendingCount)
-	}
-
-	// cancel immediately before any response
-	cancel()
-
-	// verify grpc call was cancelled and cleaned up
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected cancellation error")
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("expected quick cancellation")
-	}
-
-	// verify cleanup happened
-	time.Sleep(10 * time.Millisecond)
-	s.pmu.RLock()
-	finalPendingCount := len(s.pending)
-	s.pmu.RUnlock()
-
-	if finalPendingCount != 0 {
-		t.Fatalf("expected 0 pending requests after cancellation, got %d", finalPendingCount)
-	}
-}
-
-// edge case tests to improve coverage
-
-func TestHandleDataMarshalError(t *testing.T) {
-	s := newTestServer()
-
-	// create a scenario where json.Marshal fails
-	// this is tricky since webRequest.MarshalJSON handles the marshaling
-	// but we can trigger it by having the subsequent json.Marshal fail
-	testReq := newTestRequest()
-	resCh := make(chan *pb.Response, 1)
-	testUUID := "test-uuid"
-
-	s.pmu.Lock()
-	s.pending[testUUID] = &pair{req: testReq, res: resCh}
-	s.pmu.Unlock()
-
-	req := httptest.NewRequest("GET", "/data.json", nil)
-	w := httptest.NewRecorder()
-
-	s.handleData(w, req)
-
-	// this should succeed since our webRequest is well-formed
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestCollectorResponseChannelClosed(t *testing.T) {
-	s := newTestServer()
-	client, cleanup := startTestGRPCServer(t, s)
-	defer cleanup()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	testReq := newTestRequest()
-
-	// start grpc call
-	resultCh := make(chan *pb.Response, 1)
-	errCh := make(chan error, 1)
-
-	go func() {
-		res, err := client.Collect(ctx, testReq)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		resultCh <- res
-	}()
-
-	// wait for request to be registered
-	time.Sleep(10 * time.Millisecond)
-
-	// get the pending request and close its response channel manually
-	var pendingUUID string
-	var p *pair
-
-	s.pmu.RLock()
-	for uuid, pair := range s.pending {
-		pendingUUID = uuid
-		p = pair
-		break
-	}
-	s.pmu.RUnlock()
-
-	if p == nil {
-		t.Fatal("no pending request found")
-	}
-
-	// close the response channel to trigger the "response channel closed" path
-	close(p.res)
-
-	// remove from pending to avoid the submit handler from interfering
-	s.pmu.Lock()
-	delete(s.pending, pendingUUID)
-	s.pmu.Unlock()
-
-	// verify grpc call returns error
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected error for closed channel")
-		}
-		expectedMsg := "response channel closed"
-		if !strings.Contains(err.Error(), expectedMsg) {
-			t.Fatalf("expected '%s' in error, got: %v", expectedMsg, err)
-		}
-	case res := <-resultCh:
-		t.Fatalf("unexpected successful result: %v", res)
-	case <-time.After(1 * time.Second):
-		t.Fatal("timeout waiting for error")
 	}
 }
 

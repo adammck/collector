@@ -24,6 +24,7 @@ examples based only on that.
 $ git clone ...
 $ brew install protoc-gen-go protoc-gen-go-grpc
 $ bin/gen-proto.sh
+$ bin/test.sh  # run tests (67.9% coverage)
 ```
 
 

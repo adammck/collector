@@ -12,7 +12,8 @@
       "Bash(/dev/null)",
       "Bash(echo \"exit code: $?\")",
       "Bash(sed:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": [],
     "ask": []
