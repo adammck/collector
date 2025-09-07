@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -191,6 +192,10 @@ type collectorServer struct {
 func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Response, error) {
 	fmt.Printf("Collect: %v\n", req)
 
+	if err := validate(req); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	resCh := make(chan *pb.Response, 1)
 	u := uuid.NewString()
 	p := &pair{
@@ -271,6 +276,148 @@ func validate(req *pb.Request) error {
 	if req == nil {
 		return fmt.Errorf("request cannot be nil")
 	}
-	// Add your validation logic here
+	
+	if len(req.Inputs) == 0 {
+		return fmt.Errorf("request must have at least one input")
+	}
+	
+	for i, input := range req.Inputs {
+		if err := validateInput(input, i); err != nil {
+			return fmt.Errorf("input %d: %w", i, err)
+		}
+	}
+	
+	if err := validateOutputSchema(req.Output); err != nil {
+		return fmt.Errorf("output schema: %w", err)
+	}
+	
 	return nil
+}
+
+func validateInput(input *pb.Input, index int) error {
+	if input == nil {
+		return fmt.Errorf("input cannot be nil")
+	}
+	
+	switch v := input.Visualization.(type) {
+	case *pb.Input_Grid:
+		if err := validateGrid(v.Grid, input.Data); err != nil {
+			return err
+		}
+	case nil:
+		return fmt.Errorf("visualization is required")
+	default:
+		return fmt.Errorf("unsupported visualization type")
+	}
+	
+	return validateData(input.Data)
+}
+
+func validateGrid(grid *pb.Grid, data *pb.Data) error {
+	if grid == nil {
+		return fmt.Errorf("grid cannot be nil")
+	}
+	
+	if grid.Rows <= 0 || grid.Cols <= 0 {
+		return fmt.Errorf("grid dimensions must be positive (got %dx%d)", grid.Rows, grid.Cols)
+	}
+	
+	if grid.Rows > 100 || grid.Cols > 100 {
+		return fmt.Errorf("grid too large (max 100x100, got %dx%d)", grid.Rows, grid.Cols)
+	}
+	
+	if data == nil {
+		return fmt.Errorf("data is required")
+	}
+	
+	expectedSize := int(grid.Rows * grid.Cols)
+	
+	switch d := data.Data.(type) {
+	case *pb.Data_Ints:
+		if d.Ints == nil {
+			return fmt.Errorf("ints data cannot be nil")
+		}
+		if len(d.Ints.Values) != expectedSize {
+			return fmt.Errorf("data size %d doesn't match grid size %d", len(d.Ints.Values), expectedSize)
+		}
+	case *pb.Data_Floats:
+		if d.Floats == nil {
+			return fmt.Errorf("floats data cannot be nil")
+		}
+		if len(d.Floats.Values) != expectedSize {
+			return fmt.Errorf("data size %d doesn't match grid size %d", len(d.Floats.Values), expectedSize)
+		}
+	case nil:
+		return fmt.Errorf("data type is required")
+	default:
+		return fmt.Errorf("unsupported data type")
+	}
+	
+	return nil
+}
+
+func validateData(data *pb.Data) error {
+	if data == nil {
+		return fmt.Errorf("data cannot be nil")
+	}
+	
+	switch d := data.Data.(type) {
+	case *pb.Data_Ints:
+		return nil
+	case *pb.Data_Floats:
+		if d.Floats == nil {
+			return fmt.Errorf("floats data cannot be nil")
+		}
+		for i, v := range d.Floats.Values {
+			if math.IsNaN(v) {
+				return fmt.Errorf("float value at index %d is NaN", i)
+			}
+			if math.IsInf(v, 0) {
+				return fmt.Errorf("float value at index %d is infinite", i)
+			}
+		}
+		return nil
+	case nil:
+		return fmt.Errorf("data type is required")
+	default:
+		return fmt.Errorf("unsupported data type")
+	}
+}
+
+func validateOutputSchema(schema *pb.OutputSchema) error {
+	if schema == nil {
+		return fmt.Errorf("output schema is required")
+	}
+	
+	switch s := schema.Output.(type) {
+	case *pb.OutputSchema_OptionList:
+		if s.OptionList == nil {
+			return fmt.Errorf("option list cannot be nil")
+		}
+		if len(s.OptionList.Options) < 2 {
+			return fmt.Errorf("option list must have at least 2 options (got %d)", len(s.OptionList.Options))
+		}
+		
+		hotkeys := make(map[string]bool)
+		for i, opt := range s.OptionList.Options {
+			if opt == nil {
+				return fmt.Errorf("option %d cannot be nil", i)
+			}
+			if opt.Label == "" {
+				return fmt.Errorf("option %d label cannot be empty", i)
+			}
+			if len(opt.Hotkey) != 1 {
+				return fmt.Errorf("option %d hotkey must be single character (got %q)", i, opt.Hotkey)
+			}
+			if hotkeys[opt.Hotkey] {
+				return fmt.Errorf("duplicate hotkey %q found at option %d", opt.Hotkey, i)
+			}
+			hotkeys[opt.Hotkey] = true
+		}
+		return nil
+	case nil:
+		return fmt.Errorf("output type is required")
+	default:
+		return fmt.Errorf("unsupported output schema type")
+	}
 }

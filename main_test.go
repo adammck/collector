@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func newTestRequest() *pb.Request {
 				},
 				Data: &pb.Data{
 					Data: &pb.Data_Ints{
-						Ints: &pb.Ints{Values: []int64{1, 2, 3, 4, 5}},
+						Ints: &pb.Ints{Values: make([]int64, 100)}, // 10x10 = 100
 					},
 				},
 			},
@@ -1057,11 +1058,31 @@ func TestValidateRequest(t *testing.T) {
 		name    string
 		req     *pb.Request
 		wantErr bool
+		errMsg  string
 	}{
 		{
 			name:    "nil request",
 			req:     nil,
 			wantErr: true,
+			errMsg:  "request cannot be nil",
+		},
+		{
+			name: "empty inputs",
+			req: &pb.Request{
+				Inputs: []*pb.Input{},
+				Output: &pb.OutputSchema{
+					Output: &pb.OutputSchema_OptionList{
+						OptionList: &pb.OptionListSchema{
+							Options: []*pb.Option{
+								{Label: "Option 1", Hotkey: "1"},
+								{Label: "Option 2", Hotkey: "2"},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "request must have at least one input",
 		},
 		{
 			name:    "valid request",
@@ -1075,7 +1096,515 @@ func TestValidateRequest(t *testing.T) {
 			err := validate(tt.req)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
 			}
 		})
+	}
+}
+
+func TestValidateInput(t *testing.T) {
+	validData := &pb.Data{
+		Data: &pb.Data_Ints{
+			Ints: &pb.Ints{Values: make([]int64, 100)}, // 10x10 = 100
+		},
+	}
+
+	tests := []struct {
+		name    string
+		input   *pb.Input
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil input",
+			input:   nil,
+			wantErr: true,
+			errMsg:  "input cannot be nil",
+		},
+		{
+			name: "nil visualization",
+			input: &pb.Input{
+				Visualization: nil,
+				Data:          validData,
+			},
+			wantErr: true,
+			errMsg:  "visualization is required",
+		},
+		{
+			name: "valid input",
+			input: &pb.Input{
+				Visualization: &pb.Input_Grid{
+					Grid: &pb.Grid{Rows: 10, Cols: 10},
+				},
+				Data: validData,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateInput(tt.input, 0)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateInput() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateGrid(t *testing.T) {
+	tests := []struct {
+		name    string
+		grid    *pb.Grid
+		data    *pb.Data
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil grid",
+			grid:    nil,
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid cannot be nil",
+		},
+		{
+			name:    "zero rows",
+			grid:    &pb.Grid{Rows: 0, Cols: 5},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid dimensions must be positive",
+		},
+		{
+			name:    "zero cols",
+			grid:    &pb.Grid{Rows: 5, Cols: 0},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid dimensions must be positive",
+		},
+		{
+			name:    "negative rows",
+			grid:    &pb.Grid{Rows: -1, Cols: 5},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid dimensions must be positive",
+		},
+		{
+			name:    "too large grid",
+			grid:    &pb.Grid{Rows: 101, Cols: 50},
+			data:    &pb.Data{},
+			wantErr: true,
+			errMsg:  "grid too large",
+		},
+		{
+			name:    "nil data",
+			grid:    &pb.Grid{Rows: 2, Cols: 2},
+			data:    nil,
+			wantErr: true,
+			errMsg:  "data is required",
+		},
+		{
+			name:    "nil data type",
+			grid:    &pb.Grid{Rows: 2, Cols: 2},
+			data:    &pb.Data{Data: nil},
+			wantErr: true,
+			errMsg:  "data type is required",
+		},
+		{
+			name: "nil ints data",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Ints{Ints: nil},
+			},
+			wantErr: true,
+			errMsg:  "ints data cannot be nil",
+		},
+		{
+			name: "wrong ints size",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Ints{
+					Ints: &pb.Ints{Values: []int64{1, 2, 3}}, // should be 4
+				},
+			},
+			wantErr: true,
+			errMsg:  "data size 3 doesn't match grid size 4",
+		},
+		{
+			name: "nil floats data",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{Floats: nil},
+			},
+			wantErr: true,
+			errMsg:  "floats data cannot be nil",
+		},
+		{
+			name: "wrong floats size",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, 2.0, 3.0}}, // should be 4
+				},
+			},
+			wantErr: true,
+			errMsg:  "data size 3 doesn't match grid size 4",
+		},
+		{
+			name: "valid ints",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Ints{
+					Ints: &pb.Ints{Values: []int64{1, 2, 3, 4}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid floats",
+			grid: &pb.Grid{Rows: 2, Cols: 2},
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, 2.0, 3.0, 4.0}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "1x1 grid valid",
+			grid: &pb.Grid{Rows: 1, Cols: 1},
+			data: &pb.Data{
+				Data: &pb.Data_Ints{
+					Ints: &pb.Ints{Values: []int64{42}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "max size grid valid",
+			grid: &pb.Grid{Rows: 100, Cols: 100},
+			data: &pb.Data{
+				Data: &pb.Data_Ints{
+					Ints: &pb.Ints{Values: make([]int64, 10000)},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGrid(tt.grid, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateGrid() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateData(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    *pb.Data
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil data",
+			data:    nil,
+			wantErr: true,
+			errMsg:  "data cannot be nil",
+		},
+		{
+			name:    "nil data type",
+			data:    &pb.Data{Data: nil},
+			wantErr: true,
+			errMsg:  "data type is required",
+		},
+		{
+			name: "valid ints",
+			data: &pb.Data{
+				Data: &pb.Data_Ints{
+					Ints: &pb.Ints{Values: []int64{1, 2, 3}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid floats",
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, 2.0, 3.0}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "nil floats data",
+			data: &pb.Data{
+				Data: &pb.Data_Floats{Floats: nil},
+			},
+			wantErr: true,
+			errMsg:  "floats data cannot be nil",
+		},
+		{
+			name: "nan float",
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, math.NaN(), 3.0}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "float value at index 1 is NaN",
+		},
+		{
+			name: "positive inf float",
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, math.Inf(1), 3.0}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "float value at index 1 is infinite",
+		},
+		{
+			name: "negative inf float",
+			data: &pb.Data{
+				Data: &pb.Data_Floats{
+					Floats: &pb.Floats{Values: []float64{1.0, math.Inf(-1), 3.0}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "float value at index 1 is infinite",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateData(tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateData() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestValidateOutputSchema(t *testing.T) {
+	tests := []struct {
+		name    string
+		schema  *pb.OutputSchema
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "nil schema",
+			schema:  nil,
+			wantErr: true,
+			errMsg:  "output schema is required",
+		},
+		{
+			name:    "nil output type",
+			schema:  &pb.OutputSchema{Output: nil},
+			wantErr: true,
+			errMsg:  "output type is required",
+		},
+		{
+			name: "nil option list",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{OptionList: nil},
+			},
+			wantErr: true,
+			errMsg:  "option list cannot be nil",
+		},
+		{
+			name: "empty option list",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{Options: []*pb.Option{}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option list must have at least 2 options",
+		},
+		{
+			name: "one option only",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option list must have at least 2 options",
+		},
+		{
+			name: "nil option",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							nil,
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option 1 cannot be nil",
+		},
+		{
+			name: "empty label",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							{Label: "", Hotkey: "2"},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option 1 label cannot be empty",
+		},
+		{
+			name: "empty hotkey",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							{Label: "Option 2", Hotkey: ""},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option 1 hotkey must be single character",
+		},
+		{
+			name: "multi-char hotkey",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							{Label: "Option 2", Hotkey: "ab"},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "option 1 hotkey must be single character",
+		},
+		{
+			name: "duplicate hotkey",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							{Label: "Option 2", Hotkey: "1"},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "duplicate hotkey \"1\" found at option 1",
+		},
+		{
+			name: "valid option list",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "Option 1", Hotkey: "1"},
+							{Label: "Option 2", Hotkey: "2"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid many options",
+			schema: &pb.OutputSchema{
+				Output: &pb.OutputSchema_OptionList{
+					OptionList: &pb.OptionListSchema{
+						Options: []*pb.Option{
+							{Label: "First", Hotkey: "a"},
+							{Label: "Second", Hotkey: "b"},
+							{Label: "Third", Hotkey: "c"},
+							{Label: "Fourth", Hotkey: "d"},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOutputSchema(tt.schema)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateOutputSchema() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("expected error containing %q, got %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+func TestCollectorValidationFailure(t *testing.T) {
+	s := newTestServer()
+	client, cleanup := startTestGRPCServer(t, s)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// create invalid request
+	badReq := &pb.Request{
+		Inputs: []*pb.Input{}, // empty inputs should fail validation
+		Output: &pb.OutputSchema{
+			Output: &pb.OutputSchema_OptionList{
+				OptionList: &pb.OptionListSchema{
+					Options: []*pb.Option{
+						{Label: "Option 1", Hotkey: "1"},
+						{Label: "Option 2", Hotkey: "2"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := client.Collect(ctx, badReq)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	// should be grpc invalid argument error
+	if !strings.Contains(err.Error(), "request must have at least one input") {
+		t.Fatalf("expected validation error message, got: %v", err)
 	}
 }
