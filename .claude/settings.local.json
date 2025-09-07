@@ -19,7 +19,10 @@
       "Bash(npx tailwindcss init:*)",
       "Bash(npm run build:*)",
       "Bash(./collector)",
-      "Bash(npm run lint)"
+      "Bash(npm run lint)",
+      "Bash(grep:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:coverage:*)"
     ],
     "deny": [],
     "ask": []
