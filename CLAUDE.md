@@ -12,10 +12,12 @@ This runs tests with race detection and generates coverage reports. Current cove
 
 ### Test Structure
 - `main_test.go` contains comprehensive unit and integration tests
+- `queue_test.go` contains dedicated queue functionality tests
 - Tests cover concurrent operations, HTTP handlers, gRPC service, end-to-end flows, and input validation
 - Race condition testing with `-race` flag
 - Configurable timeout for test scenarios (server.timeout field)
 - Extensive validation test coverage with 95+ test cases for all edge cases
+- Queue tests verify FIFO ordering, defer operations, and concurrent access
 
 ### Key Testing Patterns
 - Use `newTestServer()` helper for test server instances
@@ -26,20 +28,25 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Test data must match grid dimensions (e.g., 10x10 grid needs 100 data values)
 - **Error response testing**: expect structured JSON errors, not plain text messages
 - **Status code changes**: missing UUID changed from 404→400, timeout errors changed from 404→408
+- **Queue testing**: Use `NewQueue()` for isolated queue tests, verify FIFO ordering and defer behavior
 
 ## Architecture
 
 ### Core Components
-- **server**: manages pending requests and waiter notifications
-- **HTTP handlers**: `/data.json` (polling) and `/submit/{uuid}` (responses)  
+- **server**: manages queue and current active requests
+- **queue.go**: thread-safe FIFO queue with defer functionality and waiter notifications
+- **HTTP handlers**: `/data.json` (polling), `/submit/{uuid}` (responses), `/defer/{uuid}` (defer), `/queue/status` (statistics)
 - **gRPC service**: `Collect` RPC with context cancellation support
-- **concurrency**: thread-safe pending map with RWMutex, waiter channel notifications
+- **concurrency**: thread-safe queue operations with RWMutex, waiter channel notifications for efficient polling
 
 ### Request Flow
-1. gRPC `Collect` call validates input and creates pending request with response channel
-2. HTTP `/data.json` polls for pending requests (30s timeout) and validates before serving
-3. Web client submits response via `/submit/{uuid}`
-4. Response flows back through gRPC channel
+1. gRPC `Collect` call validates input and enqueues request with response channel
+2. HTTP `/data.json` dequeues next request (30s timeout) and serves to web client
+3. Web client can either:
+   - Submit response via `/submit/{uuid}` (completes the request)
+   - Defer via `/defer/{uuid}` (moves item to end of queue and serves next)
+4. Response flows back through gRPC channel to complete the `Collect` call
+5. Context cancellation properly removes items from queue
 
 ### Input Validation
 - **Request validation**: ensures at least one input is provided
@@ -51,12 +58,13 @@ This runs tests with race detection and generates coverage reports. Current cove
 
 ### JSON Marshaling
 - `webRequest` has custom `MarshalJSON()` using protojson for proto field
+- Includes queue status in web responses for UI display
 - Protobuf fields use capitalized names in JSON (e.g. "Visualization", "Data")
 - Parse responses as `map[string]interface{}` rather than struct unmarshaling
 
 ## Build System
 - `bin/gen-proto.sh` - regenerates protobuf code
-- `bin/test.sh` - runs tests with coverage
+- `bin/test.sh` - runs tests with coverage (includes both main and queue tests)
 - protobuf files in `proto/` generate code in `proto/gen/`
 
 ## Error Handling
@@ -68,8 +76,8 @@ This runs tests with race detection and generates coverage reports. Current cove
   - `timeoutError()` → DeadlineExceeded
   - `internalError()` → Internal
   - `resourceExhaustedError()` → ResourceExhausted
-- **Resource limits**: max 1000 pending requests to prevent memory exhaustion
-- **Request lifecycle**: proper cleanup on all exit paths with defer statements
+- **Resource limits**: max 1000 pending requests in queue to prevent memory exhaustion
+- **Request lifecycle**: proper cleanup on all exit paths, queue items removed on context cancellation
 
 ### HTTP Error Responses
 - **Structured JSON errors** (`http_errors.go`): consistent error format with code, message, and optional details
@@ -85,6 +93,7 @@ This runs tests with race detection and generates coverage reports. Current cove
 - **Automatic retry**: network errors and timeouts trigger exponential backoff
 - **Error categorization**: distinguishes between client errors, server errors, and network issues
 - **User feedback**: clear state messages with retry indication
+- **Queue integration**: defer operations gracefully handle errors and provide fallback to next item
 
 ### Monitoring
 - **Error statistics** (`monitoring.go`): atomic counters for different error types
@@ -94,6 +103,46 @@ This runs tests with race detection and generates coverage reports. Current cove
 ## Development Notes
 - Main function starts both HTTP (port 8000) and gRPC (port 50051) servers
 - Static files served from `./static/` directory
-- Concurrent access tested extensively - no race conditions detected
-- Context cancellation properly cleans up pending requests
+- Concurrent access tested extensively - no race conditions detected in queue operations
+- Context cancellation properly cleans up queue items and pending requests
 - **No panic recovery**: system fails fast rather than attempting recovery from unknown state
+
+## Queue System
+
+### Queue Operations
+- **FIFO ordering**: items processed in arrival order (except deferred items)
+- **Defer functionality**: moves items to end of queue for later processing
+- **Thread safety**: all operations protected by RWMutex for concurrent access
+- **Waiter notifications**: efficient polling through channel-based notifications
+- **Resource limits**: maximum 1000 items in queue
+
+### Queue Status Tracking
+- **Active items**: ready for processing
+- **Deferred items**: moved to end of queue, skipped during normal processing
+- **Total items**: sum of active and deferred
+- **Real-time updates**: status included in all web responses
+
+### UI Integration
+- **Queue display**: shows position and totals in interface
+- **Keyboard shortcuts**: Ctrl+D to defer, Ctrl+N for next item
+- **Defer button**: visual UI element with tooltip
+- **Status updates**: real-time queue information
+
+## Real-time Usage Considerations
+
+### Robotics/Live Scenarios
+- **FIFO ordering** maintains temporal consistency for sequential robot actions
+- **Context timeouts** should be set appropriately by gRPC clients for time-sensitive operations
+- **Fallback strategies** recommended for critical decisions when human response is delayed
+- **Queue monitoring** helps track operator workload and response times
+
+### Simulation Integration
+- **Pausable environments** (like MuJoCo) can wait indefinitely for human responses
+- **Defer functionality** useful for ambiguous cases that need additional context
+- **Batch processing** supported through queue accumulation during simulation pauses
+
+### Performance Notes
+- **HTTP polling** adds latency (~1 request/response cycle per decision)
+- **Queue overhead** minimal for typical workloads (< 1000 pending items)
+- **Memory usage** scales linearly with queue size
+- **Concurrent safety** verified through extensive race condition testing
