@@ -29,6 +29,77 @@ class StateNotifier {
     }
 }
 
+class QueueManager {
+    constructor(statusElement) {
+        this.statusElement = statusElement;
+        this.currentUUID = null;
+    }
+    
+    updateStatus(queue) {
+        if (!queue) return;
+        
+        const { total, active, deferred } = queue;
+        
+        let statusText = `Queue: ${active} active`;
+        if (deferred > 0) statusText += `, ${deferred} deferred`;
+        statusText += `, ${total} total`;
+        
+        this.statusElement.innerHTML = `
+            <div class="queue-status">
+                <span>${statusText}</span>
+            </div>
+        `;
+    }
+    
+    async defer() {
+        if (!this.currentUUID) return null;
+        
+        try {
+            const resp = await fetch(`/defer/${this.currentUUID}`, {
+                method: 'POST'
+            });
+            
+            if (resp.ok) {
+                return await resp.json();
+            } else {
+                throw new Error(`defer failed: ${resp.status}`);
+            }
+        } catch (err) {
+            console.error('defer error:', err);
+            throw err;
+        }
+    }
+    
+    setupKeyboardShortcuts(fetcher) {
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'd' && e.ctrlKey) {
+                e.preventDefault();
+                this.handleDefer(fetcher);
+            }
+            if (e.key === 'n' && e.ctrlKey) {
+                e.preventDefault();
+                fetcher.next();
+            }
+        });
+    }
+    
+    async handleDefer(fetcher) {
+        try {
+            fetcher.stateNotifier.setState('awaiting_data', 'deferring item...');
+            const data = await this.defer();
+            
+            // defer endpoint returns next item directly
+            if (data && data.uuid) {
+                fetcher.processNewData(data);
+            } else {
+                await fetcher.next();
+            }
+        } catch (err) {
+            fetcher.handleError(err);
+        }
+    }
+}
+
 // Modify the Fetcher class to include state management
 class Fetcher {
     constructor(inFactory, outFactory) {
@@ -43,6 +114,8 @@ class Fetcher {
         this.in = null;
         this.out = null;
         this.stateNotifier = new StateNotifier(document.querySelector('.state-message'));
+        this.queueManager = new QueueManager(document.querySelector('.queue-status'));
+        this.queueManager.setupKeyboardShortcuts(this);
     }
 
     async next() {
@@ -51,38 +124,48 @@ class Fetcher {
             const resp = await this.fetchWithRetry(this.api.fetch);
             const data = await resp.json();
             
-            if (!data.uuid || typeof data.uuid !== 'string') {
-                throw new Error('invalid uuid in response');
-            }
-            if (!data.proto || typeof data.proto !== 'object') {
-                throw new Error('missing proto in response');
-            }
-            
-            this.uuid = data.uuid;
-            
-            if (this.in) this.in.cleanup();
-            if (this.out) this.out.cleanup();
-            
-            const input = data.proto.inputs?.[0];
-            if (input) {
-                this.validateInput(input);
-                this.in = this.inFactory.create(input);
-                this.in.handle(input);
-            }
-            
-            const output = data.proto.output;
-            if (output) {
-                this.validateOutput(output);
-                this.out = this.outFactory.create(output, i => this.submit(i));
-                this.out.handle(output);
-            }
-            
-            this.canSubmit = true;
-            this.stateNotifier.setState('waiting_user');
+            this.processNewData(data);
 
         } catch (err) {
             this.handleError(err);
         }
+    }
+
+    processNewData(data) {
+        if (!data.uuid || typeof data.uuid !== 'string') {
+            throw new Error('invalid uuid in response');
+        }
+        if (!data.proto || typeof data.proto !== 'object') {
+            throw new Error('missing proto in response');
+        }
+        
+        this.uuid = data.uuid;
+        this.queueManager.currentUUID = data.uuid;
+        
+        // update queue status
+        if (data.queue) {
+            this.queueManager.updateStatus(data.queue);
+        }
+        
+        if (this.in) this.in.cleanup();
+        if (this.out) this.out.cleanup();
+        
+        const input = data.proto.inputs?.[0];
+        if (input) {
+            this.validateInput(input);
+            this.in = this.inFactory.create(input);
+            this.in.handle(input);
+        }
+        
+        const output = data.proto.output;
+        if (output) {
+            this.validateOutput(output);
+            this.out = this.outFactory.create(output, i => this.submit(i));
+            this.out.handle(output);
+        }
+        
+        this.canSubmit = true;
+        this.stateNotifier.setState('waiting_user');
     }
 
     async fetchWithRetry(url, maxAttempts = 3, options = {}) {
@@ -367,4 +450,5 @@ const outFactory = new OutFactory(document.querySelector(".output"));
 const fetcher = new Fetcher(inFactory, outFactory);
 
 document.getElementById("fetchDataButton").addEventListener("click", () => fetcher.next());
+document.getElementById("deferButton").addEventListener("click", () => fetcher.queueManager.handleDefer(fetcher));
 fetcher.next();

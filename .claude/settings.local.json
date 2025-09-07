@@ -10,7 +10,9 @@
       "Bash(git commit:*)",
       "Bash(go:*)",
       "Bash(/dev/null)",
-      "Bash(echo \"exit code: $?\")"
+      "Bash(echo \"exit code: $?\")",
+      "Bash(sed:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []

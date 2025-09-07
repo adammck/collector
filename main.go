@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -37,19 +36,17 @@ type pair struct {
 }
 
 type server struct {
-	pending map[string]*pair
-	pmu     sync.RWMutex
-
-	waiters map[chan struct{}]struct{}
-	wmu     sync.Mutex
+	queue   *Queue
+	current map[string]*QueueItem
+	cmu     sync.RWMutex
 
 	timeout time.Duration
 }
 
 func newServer() *server {
 	return &server{
-		pending: make(map[string]*pair),
-		waiters: make(map[chan struct{}]struct{}),
+		queue:   NewQueue(),
+		current: make(map[string]*QueueItem),
 		timeout: 30 * time.Second,
 	}
 }
@@ -61,6 +58,8 @@ func (s *server) ServeHTTP() http.Handler {
 	mux.Handle("/", fs)
 	mux.HandleFunc("/data.json", s.handleData)
 	mux.HandleFunc("POST /submit/{uuid}", s.handleSubmit)
+	mux.HandleFunc("POST /defer/{uuid}", s.handleDefer)
+	mux.HandleFunc("GET /queue/status", s.handleQueueStatus)
 
 	return mux
 }
@@ -68,6 +67,7 @@ func (s *server) ServeHTTP() http.Handler {
 type webRequest struct {
 	UUID  string      `json:"uuid"`
 	Proto *pb.Request `json:"proto"`
+	Queue QueueStatus `json:"queue"`
 }
 
 func (w *webRequest) MarshalJSON() ([]byte, error) {
@@ -79,95 +79,37 @@ func (w *webRequest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]interface{}{
 		"uuid":  w.UUID,
 		"proto": json.RawMessage(pj),
+		"queue": w.Queue,
 	})
 }
 
-// assumes s.pmu is held
-func (s *server) getRandomPending() (string, *pair, bool) {
-	if len(s.pending) == 0 {
-		return "", nil, false
-	}
-
-	keys := make([]string, 0, len(s.pending))
-	for k := range s.pending {
-		keys = append(keys, k)
-	}
-
-	uuid := keys[rand.Intn(len(keys))]
-	p := s.pending[uuid]
-
-	return uuid, p, true
-}
-
-func (s *server) getPendingRequest() (string, *pair, error) {
-	ch := make(chan struct{})
-
-	s.wmu.Lock()
-	s.waiters[ch] = struct{}{}
-	s.wmu.Unlock()
-
-	defer func() {
-		s.wmu.Lock()
-		delete(s.waiters, ch)
-		s.wmu.Unlock()
-	}()
-
-	timeout := time.After(s.timeout)
-	for {
-		s.pmu.RLock()
-		uuid, p, ok := s.getRandomPending()
-		s.pmu.RUnlock()
-		if ok {
-			return uuid, p, nil
-		}
-
-		select {
-		case <-ch:
-			continue
-		case <-timeout:
-			return "", nil, errTimeout
-		}
-	}
-}
-
-func (s *server) notifyWaiters() {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	
-	for ch := range s.waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-			// waiter not ready, skip
-		}
-	}
-}
 
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
-	uuid, p, err := s.getPendingRequest()
+	item, err := s.queue.GetNext(s.timeout)
 	if err != nil {
-		if err == errTimeout {
-			writeJSONError(w, http.StatusRequestTimeout, 
-				"no pending requests available", 
-				"wait and retry")
-		} else {
-			writeJSONError(w, http.StatusInternalServerError,
-				"failed to get pending request",
-				err.Error())
-		}
+		writeJSONError(w, http.StatusRequestTimeout,
+			"no pending requests available",
+			"wait and retry")
 		return
 	}
 
-	if err := validate(p.req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, 
-			"invalid request data", 
+	if err := validate(item.Request); err != nil {
+		writeJSONError(w, http.StatusBadRequest,
+			"invalid request data",
 			err.Error())
 		return
 	}
 
+	s.cmu.Lock()
+	s.current[item.ID] = item
+	s.cmu.Unlock()
+
+	status := s.queue.Status()
+
 	b, err := json.Marshal(webRequest{
-		UUID:  uuid,
-		Proto: p.req,
+		UUID:  item.ID,
+		Proto: item.Request,
+		Queue: status,
 	})
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError,
@@ -183,21 +125,21 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	u := r.PathValue("uuid")
 	if u == "" {
-		writeJSONError(w, http.StatusBadRequest, 
+		writeJSONError(w, http.StatusBadRequest,
 			"missing uuid parameter")
 		return
 	}
 
-	s.pmu.Lock()
-	p, ok := s.pending[u]
+	s.cmu.Lock()
+	item, ok := s.current[u]
 	if ok {
-		delete(s.pending, u)
+		delete(s.current, u)
 	}
-	s.pmu.Unlock()
+	s.cmu.Unlock()
 
 	if !ok {
-		writeJSONError(w, http.StatusNotFound, 
-			"pending request not found", 
+		writeJSONError(w, http.StatusNotFound,
+			"pending request not found",
 			fmt.Sprintf("uuid: %s", u))
 		return
 	}
@@ -218,11 +160,35 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.res <- res
-	close(p.res)
+	item.Response <- res
+	close(item.Response)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *server) handleDefer(w http.ResponseWriter, r *http.Request) {
+	u := r.PathValue("uuid")
+	if u == "" {
+		writeJSONError(w, http.StatusBadRequest,
+			"missing uuid parameter")
+		return
+	}
+
+	if err := s.queue.Defer(u); err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// immediately serve next item
+	s.handleData(w, r)
+}
+
+func (s *server) handleQueueStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.queue.Status()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
 
 type collectorServer struct {
@@ -239,33 +205,28 @@ func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Re
 	}
 
 	// check resource limits
-	cs.s.pmu.RLock()
-	pendingCount := len(cs.s.pending)
-	cs.s.pmu.RUnlock()
-
-	if pendingCount >= maxPendingRequests {
+	queueStatus := cs.s.queue.Status()
+	if queueStatus.Total >= maxPendingRequests {
 		return nil, resourceExhaustedError("pending requests")
 	}
 
 	resCh := make(chan *pb.Response, 1)
 	u := uuid.NewString()
-	p := &pair{
-		req: req,
-		res: resCh,
+	item := &QueueItem{
+		ID:       u,
+		Request:  req,
+		Response: resCh,
+		AddedAt:  time.Now(),
+		Context:  ctx,
 	}
 
-	cs.s.pmu.Lock()
-	cs.s.pending[u] = p
-	cs.s.pmu.Unlock()
-
-	// notify waiters with error handling
-	cs.s.notifyWaiters()
+	if err := cs.s.queue.Enqueue(item); err != nil {
+		return nil, internalError(err)
+	}
 
 	// cleanup on all exit paths
 	defer func() {
-		cs.s.pmu.Lock()
-		delete(cs.s.pending, u)
-		cs.s.pmu.Unlock()
+		cs.s.queue.Remove(u)
 	}()
 
 	select {
