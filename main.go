@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,14 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 )
+
+const (
+	maxPendingRequests = 1000
+	httpTimeout = 30 * time.Second
+	submitTimeout = 5 * time.Second
+)
+
+var errTimeout = errors.New("no pending requests after timeout")
 
 type pair struct {
 	req *pb.Request
@@ -116,7 +125,20 @@ func (s *server) getPendingRequest() (string, *pair, error) {
 		case <-ch:
 			continue
 		case <-timeout:
-			return "", nil, fmt.Errorf("no pending requests after timeout")
+			return "", nil, errTimeout
+		}
+	}
+}
+
+func (s *server) notifyWaiters() {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	
+	for ch := range s.waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+			// waiter not ready, skip
 		}
 	}
 }
@@ -124,12 +146,22 @@ func (s *server) getPendingRequest() (string, *pair, error) {
 func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 	uuid, p, err := s.getPendingRequest()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if err == errTimeout {
+			writeJSONError(w, http.StatusRequestTimeout, 
+				"no pending requests available", 
+				"wait and retry")
+		} else {
+			writeJSONError(w, http.StatusInternalServerError,
+				"failed to get pending request",
+				err.Error())
+		}
 		return
 	}
 
 	if err := validate(p.req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, 
+			"invalid request data", 
+			err.Error())
 		return
 	}
 
@@ -138,7 +170,9 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 		Proto: p.req,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError,
+			"failed to marshal request",
+			err.Error())
 		return
 	}
 
@@ -149,7 +183,8 @@ func (s *server) handleData(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	u := r.PathValue("uuid")
 	if u == "" {
-		http.Error(w, "missing: uuid", http.StatusNotFound)
+		writeJSONError(w, http.StatusBadRequest, 
+			"missing uuid parameter")
 		return
 	}
 
@@ -161,19 +196,25 @@ func (s *server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	s.pmu.Unlock()
 
 	if !ok {
-		http.Error(w, fmt.Sprintf("pending not found: %v", u), http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, 
+			"pending request not found", 
+			fmt.Sprintf("uuid: %s", u))
 		return
 	}
 
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError,
+			"failed to read request body",
+			err.Error())
 		return
 	}
 
 	res := &pb.Response{}
 	if err := protojson.Unmarshal(b, res); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest,
+			"invalid response format",
+			err.Error())
 		return
 	}
 
@@ -192,8 +233,18 @@ type collectorServer struct {
 func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Response, error) {
 	fmt.Printf("Collect: %v\n", req)
 
+	// validate first
 	if err := validate(req); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, validationError("invalid request: %v", err)
+	}
+
+	// check resource limits
+	cs.s.pmu.RLock()
+	pendingCount := len(cs.s.pending)
+	cs.s.pmu.RUnlock()
+
+	if pendingCount >= maxPendingRequests {
+		return nil, resourceExhaustedError("pending requests")
 	}
 
 	resCh := make(chan *pb.Response, 1)
@@ -207,26 +258,26 @@ func (cs *collectorServer) Collect(ctx context.Context, req *pb.Request) (*pb.Re
 	cs.s.pending[u] = p
 	cs.s.pmu.Unlock()
 
-	// notify all waiters
-	cs.s.wmu.Lock()
-	for ch := range cs.s.waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-	cs.s.wmu.Unlock()
+	// notify waiters with error handling
+	cs.s.notifyWaiters()
+
+	// cleanup on all exit paths
+	defer func() {
+		cs.s.pmu.Lock()
+		delete(cs.s.pending, u)
+		cs.s.pmu.Unlock()
+	}()
 
 	select {
 	case res, ok := <-resCh:
 		if !ok {
-			return nil, status.Error(codes.Aborted, "response channel closed")
+			return nil, internalError(fmt.Errorf("response channel closed"))
 		}
 		return res, nil
 	case <-ctx.Done():
-		cs.s.pmu.Lock()
-		delete(cs.s.pending, u)
-		cs.s.pmu.Unlock()
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, timeoutError("collect")
+		}
 		return nil, status.Error(codes.Canceled, "request cancelled")
 	}
 }

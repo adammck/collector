@@ -48,17 +48,9 @@ class Fetcher {
     async next() {
         try {
             this.stateNotifier.setState('awaiting_data');
-            const resp = await fetch(this.api.fetch);
-            
-            if (!resp.ok) {
-                throw new Error(`server error: ${resp.status}`);
-            }
-
-            if (resp.headers.get("content-type") !== "application/json") {
-                throw new Error(`invalid content-type: ${resp.headers.get("content-type")}`);
-            }
-            
+            const resp = await this.fetchWithRetry(this.api.fetch);
             const data = await resp.json();
+            
             if (!data.uuid || typeof data.uuid !== 'string') {
                 throw new Error('invalid uuid in response');
             }
@@ -89,11 +81,77 @@ class Fetcher {
             this.stateNotifier.setState('waiting_user');
 
         } catch (err) {
-            this.stateNotifier.setState(
-                err.message.includes('server error:') ? 'server_error' : 'client_error',
-                err.message
-            );
+            this.handleError(err);
         }
+    }
+
+    async fetchWithRetry(url, maxAttempts = 3, options = {}) {
+        let lastError;
+        
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            if (attempt > 0) {
+                // exponential backoff
+                await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+            }
+            
+            try {
+                const resp = await fetch(url, options);
+                
+                if (resp.status === 408) {  // request timeout
+                    lastError = new Error('timeout');
+                    continue;  // retry
+                }
+                
+                if (resp.status === 503) {  // service unavailable
+                    lastError = new Error('service unavailable');
+                    continue;  // retry
+                }
+                
+                if (!resp.ok) {
+                    let errorMsg;
+                    try {
+                        const error = await resp.json();
+                        errorMsg = error.message || `http ${resp.status}`;
+                    } catch {
+                        errorMsg = `http ${resp.status}`;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                if (resp.headers.get("content-type") !== "application/json") {
+                    throw new Error(`invalid content-type: ${resp.headers.get("content-type")}`);
+                }
+                
+                return resp;
+                
+            } catch (err) {
+                if (err.name === 'TypeError') {  // network error
+                    lastError = err;
+                    continue;  // retry
+                }
+                throw err;  // non-retryable
+            }
+        }
+        
+        throw lastError;
+    }
+    
+    handleError(err) {
+        console.error('fetch error:', err);
+        
+        // categorize error
+        if (err.message.includes('timeout')) {
+            this.stateNotifier.setState('server_error', 
+                'no training data available - waiting...');
+        } else if (err.message.includes('network') || err.name === 'TypeError') {
+            this.stateNotifier.setState('client_error', 
+                'network error - check connection');
+        } else {
+            this.stateNotifier.setState('client_error', err.message);
+        }
+        
+        // retry after delay
+        setTimeout(() => this.next(), 5000);
     }
 
     async submit(idx) {
@@ -109,25 +167,18 @@ class Fetcher {
             this.out?.clear();
             
             this.stateNotifier.setState('submitting');
-            const resp = await fetch(this.api.submit(this.uuid), {
+            const resp = await this.fetchWithRetry(this.api.submit(this.uuid), 3, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     output: { optionList: { index: idx } }
                 })
             });
-
-            if (!resp.ok) {
-                throw new Error(`server error: ${resp.status}`);
-            }
             
             await this.next();
 
         } catch (err) {
-            this.stateNotifier.setState(
-                err.message.includes('server error:') ? 'server_error' : 'client_error',
-                err.message
-            );
+            this.handleError(err);
             throw err;
         }
     }

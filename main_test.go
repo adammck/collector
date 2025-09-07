@@ -266,8 +266,8 @@ func TestHandleDataNoPending(t *testing.T) {
 	s.handleData(w, req)
 	duration := time.Since(start)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d", w.Code)
+	if w.Code != http.StatusRequestTimeout {
+		t.Fatalf("expected status 408, got %d", w.Code)
 	}
 
 	// should have waited at least the timeout duration
@@ -275,7 +275,7 @@ func TestHandleDataNoPending(t *testing.T) {
 		t.Fatalf("expected at least 100ms delay, got %v", duration)
 	}
 
-	expectedMsg := "no pending requests after timeout"
+	expectedMsg := "no pending requests available"
 	if !strings.Contains(w.Body.String(), expectedMsg) {
 		t.Fatalf("expected timeout message, got: %s", w.Body.String())
 	}
@@ -399,9 +399,9 @@ func TestHandleSubmitInvalidUUID(t *testing.T) {
 		t.Fatalf("expected status 404, got %d", w.Code)
 	}
 
-	expectedMsg := "pending not found"
+	expectedMsg := "pending request not found"
 	if !strings.Contains(w.Body.String(), expectedMsg) {
-		t.Fatalf("expected 'pending not found' message, got: %s", w.Body.String())
+		t.Fatalf("expected 'pending request not found' message, got: %s", w.Body.String())
 	}
 }
 
@@ -861,11 +861,11 @@ func TestHandleSubmitMissingUUID(t *testing.T) {
 
 	s.handleSubmit(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404 for missing uuid, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing uuid, got %d", w.Code)
 	}
 
-	expectedMsg := "missing: uuid"
+	expectedMsg := "missing uuid parameter"
 	if !strings.Contains(w.Body.String(), expectedMsg) {
 		t.Fatalf("expected 'missing: uuid' message, got: %s", w.Body.String())
 	}

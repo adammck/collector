@@ -7,7 +7,10 @@
       "Bash(go test:*)",
       "Bash(go tool cover:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(go:*)",
+      "Bash(/dev/null)",
+      "Bash(echo \"exit code: $?\")"
     ],
     "deny": [],
     "ask": []
