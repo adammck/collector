@@ -8,7 +8,7 @@ Use the single test runner script for consistent results:
 ./bin/test.sh
 ```
 
-This runs tests with race detection and generates coverage reports. Current coverage is 67.9% of source code (excluding generated protobuf files).
+This runs tests with race detection and generates coverage reports. Current coverage is 71.8% of source code (excluding generated protobuf files).
 
 ### Test Structure
 - `main_test.go` contains comprehensive unit and integration tests for queue-based architecture
@@ -20,7 +20,8 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Queue tests verify FIFO ordering, defer operations, and concurrent access
 
 ### Key Testing Patterns
-- Use `newTestServer()` helper for test server instances with queue-based architecture
+- Use `newTestServer()` helper for test server instances with queue-based architecture  
+- Global `config` variable must be initialized in `TestMain()` for tests to work
 - Set `s.timeout` to short durations (100ms) for timeout tests
 - Custom JSON unmarshaling requires parsing as `map[string]interface{}` due to protojson format
 - Mock error readers with custom `Read()` method for testing error paths
@@ -33,13 +34,25 @@ This runs tests with race detection and generates coverage reports. Current cove
 
 ## Architecture
 
+### Code Organization (2024 Refactoring)
+- **main.go**: server startup, configuration loading, graceful shutdown (120 lines)
+- **handlers.go**: HTTP endpoint handlers and web request logic (188 lines)
+- **grpc.go**: gRPC service implementation with structured logging (67 lines)
+- **validation.go**: comprehensive input validation functions (354 lines)
+- **config.go**: environment-based configuration management (57 lines)
+- **queue.go**: thread-safe FIFO queue with defer functionality and waiter notifications
+- **errors.go**: gRPC error helpers with monitoring integration
+- **http_errors.go**: structured HTTP error responses
+- **monitoring.go**: error statistics and metrics collection
+
 ### Core Components
 - **server**: manages queue and current active requests with `server.queue *Queue` and `server.current map[string]*QueueItem`
-- **queue.go**: thread-safe FIFO queue with defer functionality and waiter notifications
-- **HTTP handlers**: `/data.json` (polling), `/submit/{uuid}` (responses), `/defer/{uuid}` (defer), `/queue/status` (statistics)
+- **HTTP handlers**: `/data.json` (polling), `/submit/{uuid}` (responses), `/defer/{uuid}` (defer), `/queue/status` (statistics), `/metrics` (monitoring), `/health` (health checks)
 - **gRPC service**: `Collect` RPC with context cancellation support and multi-visualization support
-- **concurrency**: thread-safe queue operations with RWMutex, waiter channel notifications for efficient polling
-- **architecture change**: migrated from direct `pending map[string]*pair` + mutex to queue-based system
+- **concurrency**: thread-safe queue operations with RWMutex, optimized waiter notifications (wake only one waiter)
+- **observability**: structured logging (slog), metrics endpoint, health checks
+- **configuration**: environment variables with command-line fallbacks
+- **graceful shutdown**: SIGTERM/SIGINT handling with 30s timeout
 - **visualization system**: supports Grid, MultiChannelGrid, Scalar, Vector2D, and TimeSeries types with comprehensive validation
 
 ### Request Flow
@@ -69,6 +82,22 @@ This runs tests with race detection and generates coverage reports. Current cove
 - Includes queue status in web responses for UI display
 - Protobuf fields use capitalized names in JSON (e.g. "Visualization", "Data")
 - Parse responses as `map[string]interface{}` rather than struct unmarshaling
+
+## Configuration Management
+
+### Environment Variables
+- `HTTP_PORT` - HTTP server port (default: 8000)
+- `GRPC_PORT` - gRPC server port (default: 50051)
+- `MAX_PENDING_REQUESTS` - queue size limit (default: 1000)
+- `HTTP_TIMEOUT` - timeout for HTTP data polling (default: 30s)
+- `SUBMIT_TIMEOUT` - timeout for response submission (default: 5s)
+
+### Command Line Flags
+Still supported for backwards compatibility:
+- `-http-port` - HTTP server port
+- `-grpc-port` - gRPC server port
+
+Command line flags override environment variables when both are present.
 
 ## Build System
 - `bin/gen-proto.sh` - regenerates protobuf code
@@ -103,16 +132,24 @@ This runs tests with race detection and generates coverage reports. Current cove
 - **User feedback**: clear state messages with retry indication
 - **Queue integration**: defer operations gracefully handle errors and provide fallback to next item
 
-### Monitoring
-- **Error statistics** (`monitoring.go`): atomic counters for different error types
+### Observability & Monitoring
+- **Structured logging** (`slog`): replaced printf debugging with structured logs
+- **Metrics endpoint** (`/metrics`): queue statistics, error counts, and request totals
+- **Health endpoint** (`/health`): service status with timestamp and queue info
+- **Error statistics** (`monitoring.go`): atomic counters for different error types  
 - **Error tracking**: validation, timeout, internal, and resource exhaustion metrics
 - **Performance monitoring**: integrated into error helper functions
+- **Graceful shutdown**: proper server lifecycle management with 30s timeout
 
 ## Development Notes
-- Main function starts both HTTP (port 8000) and gRPC (port 50051) servers
-- Static files served from `./frontend/dist/` directory (React build output)
-- Concurrent access tested extensively - no race conditions detected in queue operations
-- Context cancellation properly cleans up queue items and pending requests
+- **Modular startup**: main function loads config, starts servers, handles signals
+- **Static files served** from `./frontend/dist/` directory (React build output)  
+- **Environment configuration**: supports both env vars and command-line flags
+- **Graceful shutdown**: servers stop cleanly on SIGTERM/SIGINT with 30s timeout
+- **Concurrent access tested** extensively - no race conditions detected in queue operations
+- **Context cancellation** properly cleans up queue items and pending requests  
+- **Optimized queue**: notifyWaiters() wakes only one waiter to reduce thundering herd
+- **Structured logging**: informative log messages with context fields
 - **No panic recovery**: system fails fast rather than attempting recovery from unknown state
 
 ### Pre-commit Checklist

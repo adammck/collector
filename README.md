@@ -27,18 +27,36 @@ $ bin/gen-proto.sh
 $ cd frontend && npm install  # install frontend dependencies
 $ npm run build               # build React frontend
 $ cd ..
-$ bin/test.sh                 # run tests (74.2% coverage)
+$ bin/test.sh                 # run tests (71.8% coverage)
 ```
 
 
 ## Usage
 
 ```console
-$ go run main.go
+$ go run .
 ```
 
 By default, the HTTP server runs on port 8000 and the gRPC server on port 50051.
 Open http://localhost:8000 in your browser to start collecting training data.
+
+### Configuration
+
+The service can be configured via environment variables:
+
+```bash
+export HTTP_PORT=8080
+export GRPC_PORT=50052
+export MAX_PENDING_REQUESTS=2000
+export HTTP_TIMEOUT=60s
+export SUBMIT_TIMEOUT=10s
+go run .
+```
+
+Command-line flags are still supported for backwards compatibility:
+```console
+$ go run . -http-port=8080 -grpc-port=50052
+```
 
 ### Development
 
@@ -46,7 +64,7 @@ For frontend development with hot module replacement:
 
 ```console
 # Terminal 1: Start the Go server
-$ go run main.go
+$ go run .
 
 # Terminal 2: Start the frontend dev server
 $ cd frontend && npm run dev
@@ -97,6 +115,8 @@ The system maintains a FIFO queue of training requests:
 - `POST /submit/{uuid}` - Submit response for a specific item
 - `POST /defer/{uuid}` - Defer an item and get the next one
 - `GET /queue/status` - Get current queue statistics
+- `GET /metrics` - Get service metrics (queue stats, error counts, request totals)
+- `GET /health` - Health check endpoint for monitoring
 
 ### Real-time Usage
 
@@ -126,12 +146,16 @@ $ go run examples/multi_input/main.go
 ## Architecture
 
 ### Backend (Go)
-- **gRPC service** on port 50051 for training data requests
+- **Modular architecture**: separate files for validation, handlers, gRPC service, and configuration
+- **gRPC service** on port 50051 for training data requests  
 - **HTTP server** on port 8000 serving React frontend and JSON API
 - **Thread-safe queue** with FIFO ordering and defer functionality
 - **Multi-visualization support** with validation for all data types
 - **Comprehensive validation** for grids, scalars, vectors, time series, and multi-channel data
 - **Structured error handling** with proper HTTP status codes
+- **Observability**: structured logging, metrics endpoint, and health checks
+- **Graceful shutdown** with SIGTERM/SIGINT handling
+- **Environment-based configuration** with command-line fallbacks
 
 ### Frontend (React + TypeScript)
 - **Vite** for fast development and optimized production builds
